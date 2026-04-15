@@ -1,0 +1,671 @@
+# REQ-CORE-001: r-man 核心 Agent 框架需求文档
+
+| 版本号 | 日期 | 变更说明 | 作者 |
+| :--- | :--- | :--- | :--- |
+| v1.0.0 | 2026-04-15 | 初始版本，定义 ReAct Agent 框架、内置工具与动态 System Prompt 机制 | GitHub Copilot |
+| v1.1.0 | 2026-04-15 | 修订内置工具集为 read/write/edit/exec/process 五件套，明确 System Prompt 组装须内联注入工具描述，支持后续扩展 | GitHub Copilot |
+| v1.2.0 | 2026-04-15 | 对齐工具实现规范：工具名更新为 read_file/write_file/replace/run_shell_command/process；补全各工具精确参数定义；replace 新增 instruction 与 allow_multiple 参数；run_shell_command 新增 description、dir_path、is_background、delay_ms 参数 | GitHub Copilot |
+| v1.3.0 | 2026-04-15 | 需求澄清落地：明确上下文压缩阈值为 context_window 的 80%；read_file 单次最多读取 50 行；TOOL.md 采用幂等生成策略（仅在不存在时从模板生成，已存在时不覆盖）；config.yaml 新增 context_window 配置项 | GitHub Copilot |
+| v1.4.0 | 2026-04-15 | 需求澄清落地：压缩后目标阈值确认为 60% 以下；process read 单次最多 50 行（与 read_file 对齐）；新增 §3.1.5 会话架构（CLI session + 飞书 session 双会话，飞书单用户串行队列） | GitHub Copilot |
+
+---
+
+## 目录
+
+1. [背景与目标](#1-背景与目标)
+2. [业务需求](#2-业务需求)
+3. [功能需求](#3-功能需求)
+   - [FR-001: ReAct Agent 执行框架](#fr-001-react-agent-执行框架)
+   - [FR-002: 内置工具集](#fr-002-内置工具集)
+   - [FR-003: 动态 System Prompt 机制](#fr-003-动态-system-prompt-机制)
+   - [FR-004: LLM 后端适配层](#fr-004-llm-后端适配层)
+   - [FR-005: Agent 运行配置管理](#fr-005-agent-运行配置管理)
+4. [非功能需求](#4-非功能需求)
+5. [核心流程图](#5-核心流程图)
+6. [数据契约](#6-数据契约)
+7. [RMAN.md 与 TOOL.md 规范](#7-rmanmd-与-toolmd-规范)
+8. [约束与假设](#8-约束与假设)
+9. [验收标准](#9-验收标准)
+10. [关联文档](#10-关联文档)
+
+---
+
+## 1. 背景与目标
+
+### 1.1 背景
+
+r-man 是一个 AI 驱动的 Linux 系统自动化维护 Agent。其核心能力需要建立在一个**可推理、可执行、可追溯**的 Agent 框架之上：
+
+- 面对复杂的运维任务（如"检查磁盘并清理 7 天前的日志"），单次 LLM 调用无法完成——需要多步骤推理与工具调用的交织迭代。
+- 运维场景高度多样，agent 的行为规则需要**可定制**——不同环境（测试机 vs 生产机）需要不同的操作边界。
+- 系统工具（文件读写、命令执行）是完成运维任务的基础，需要统一、安全地抽象与管理。
+
+### 1.2 目标
+
+- **目标 1**: 实现 **ReAct（Reasoning + Acting）** 模式的 Agent 执行引擎，支持多轮 Think → Act → Observe 循环直至任务完成。
+- **目标 2**: 提供一套**标准内置工具集**（`read_file`、`write_file`、`replace`、`run_shell_command`、`process`），工具定义与实现解耦，支持后续按需扩展。
+- **目标 3**: 实现**动态 System Prompt 组装机制**——从用户可编辑的 `RMAN.md` 和 `TOOL.md` 文件中读取内容，运行时动态构建最终的 System Prompt，使 r-man 的行为可以在不修改代码的情况下灵活定制。
+
+---
+
+## 2. 业务需求
+
+### BR-001: 多步骤运维任务自动完成
+
+**描述**: 用户下达一个自然语言形式的运维目标（如"清理 web-01 上超过 7 天的日志文件并报告释放空间"），r-man 应自主分解任务、逐步推理、调用工具执行，最终输出完整结果，无需用户干预中间步骤。
+
+**期望结果**: 用户单次下达目标，r-man 多轮迭代完成，最终以结构化报告回复执行摘要（操作列表、结果、耗时）。
+
+---
+
+### BR-002: Agent 行为可定制（无需改代码）
+
+**描述**: 不同的部署环境对 r-man 的行为有不同的要求：
+- 测试环境：允许 `exec` 任意命令，允许删除文件。
+- 生产环境：禁止破坏性操作，所有写操作须在日志中说明原因。
+- 特定业务线：r-man 只负责 nginx 相关的运维。
+
+运维人员应能通过编辑 `RMAN.md` 来调整 r-man 的行为边界、约束与个性，**无需修改任何代码、无需重启服务**。
+
+**期望结果**: 编辑 `RMAN.md` 后，下一次与 r-man 的对话即可感知到行为变化。
+
+---
+
+### BR-003: 内置工具覆盖常见运维操作
+
+**描述**: r-man 执行的绝大多数运维任务都可以由以下原语组合完成：读取文件、写入文件、执行 Shell 命令、列举目录、搜索文件内容。这些工具须作为内置能力提供，无需外部依赖。
+
+**期望结果**: r-man 开箱即具备完整的文件系统操作与 Shell 执行能力，可直接完成 95% 以上的常见 Linux 运维任务。
+
+---
+
+## 3. 功能需求
+
+### FR-001: ReAct Agent 执行框架
+
+**描述**: 实现标准 ReAct 循环，作为 r-man 的核心执行引擎。
+
+#### 3.1.1 循环结构
+
+每一轮迭代包含三个阶段：
+
+| 阶段 | 描述 | LLM 输出格式 |
+| :--- | :--- | :--- |
+| **Thought（推理）** | LLM 分析当前状态，决定下一步行动 | 自由文本，前缀 `Thought:` |
+| **Action（行动）** | LLM 选择并调用一个工具，附带参数 | 结构化 JSON，前缀 `Action:` |
+| **Observation（观察）** | 工具执行结果被注入上下文 | 系统注入，前缀 `Observation:` |
+
+当 LLM 输出 `Final Answer:` 时，循环终止，将最终答案返回给调用方。
+
+#### 3.1.2 迭代控制
+
+- **最大迭代次数**: 可配置（默认 `max_iterations: 20`），超限后强制终止并返回当前上下文摘要。
+- **超时控制**: 单次 LLM 调用超时（默认 `llm_timeout: 60s`），单次工具执行超时（默认 `tool_timeout: 30s`）。
+- **异常处理**: 工具执行失败时，将错误信息作为 `Observation` 注入，允许 LLM 自主决策是否重试或换用其他策略。
+
+#### 3.1.3 上下文管理
+
+- 维护完整的对话历史（`messages` 列表），每轮将 Thought + Action + Observation 追加到历史。
+- 当对话历史的累计 token 数达到 `context_window` 配置值的 **80%** 时，触发自动摘要压缩：对最早的若干轮 Observation 进行聚合摘要（保留 Thought 完整），压缩后的摘要替换原 Observation 写回历史，确保总 token 数降回 60% 以下。
+
+#### 3.1.4 流程图
+
+```mermaid
+flowchart TD
+    A[接收用户任务] --> B[构建 System Prompt\n读取 RMAN.md + TOOL.md]
+    B --> C[调用 LLM]
+    C --> D{解析 LLM 输出}
+    D -- "Thought + Action" --> E[执行工具]
+    E --> F[获取 Observation]
+    F --> G{检查终止条件}
+    G -- "未超限，未超时" --> C
+    G -- "Final Answer" --> H[返回最终答案]
+    G -- "超过最大迭代次数" --> I[强制终止\n返回摘要]
+    D -- "Final Answer" --> H
+    D -- "解析失败" --> J[注入格式错误提示\n重试一次]
+    J --> C
+```
+
+#### 3.1.5 会话架构
+
+r-man 维护两个独立的 Agent 会话（Session），分别服务于不同的交互入口：
+
+| Session | 入口 | 并发模型 | 说明 |
+| :--- | :--- | :--- | :--- |
+| **CLI Session** | 命令行终端 | 单一前台会话 | 每次 CLI 启动创建一个前台 Session，用户输入直接进入 ReAct 循环 |
+| **Feishu Session** | 飞书消息 | 串行队列（单用户） | 飞书固定绑定一个授权用户，消息严格串行处理；前一条消息的 Agent 循环未完成时，后续消息进入等待队列（FIFO），待前一条处理完成后再取下一条 |
+
+**Feishu Session 约束**:
+- 仅接收 `config.yaml` 中配置的 `allowed_user_open_id` 所对应用户发来的消息；来自其他用户的消息静默丢弃（记录 Warning 日志，不回复）。
+- 消息队列为内存 FIFO 队列，进程重启后队列清空（已知限制）。
+- 串行约束确保同一时刻只有一个 ReAct 执行引擎运行，避免并发工具调用（如 `run_shell_command`）产生相互干扰。
+
+---
+
+### FR-002: 内置工具集
+
+**描述**: 提供一套标准内置工具，每个工具须满足：有明确的函数签名、统一的返回结构、执行超时保护、异常时返回错误字符串而非抛出异常（确保 Agent 循环不中断）。
+
+#### 工具清单
+
+当前版本内置 5 个核心工具，后续可按运维场景需要在 `plugins/` 目录下扩展注册。
+
+| 工具名 | 功能 | 关键参数 | 返回值 |
+| :--- | :--- | :--- | :--- |
+| `read_file` | 读取文件内容，支持按行分页 | `path: str`, `start_line: int?`, `end_line: int?` | 文件文本内容（含行号）或 错误信息 |
+| `write_file` | 创建或覆盖写入文件 | `path: str`, `content: str` | 成功提示（含字节数）或 错误信息 |
+| `replace` | 精确局部编辑文件（old_string → new_string，须唯一匹配；支持批量替换） | `file_path: str`, `old_string: str`, `new_string: str`, `instruction: str`, `allow_multiple: bool = False` | 成功提示（含修改行号）或 错误信息 |
+| `run_shell_command` | 在 PTY 中执行 Shell 命令，支持前台与后台两种模式 | `command: str`, `description: str`, `dir_path: str?`, `is_background: bool = False`, `delay_ms: int?` | 前台：stdout+stderr+退出码；后台：PID |
+| `process` | 管理 run_shell_command 启动的后台进程（status/read/kill） | `action: str`, `pid: int`, `offset: int?` | 运行状态 / 累积输出 / 终止结果 |
+
+#### 工具详细说明
+
+**`read_file`** — 读取文件
+- 通过 `start_line`（1-based，含）和 `end_line`（1-based，含）限定行范围，支持大文件分页读取，避免一次性传入超量 token。
+- `start_line` 和 `end_line` 均为可选，未指定时默认从第 1 行读取。
+- **单次最多读取 50 行**（`end_line - start_line + 1 ≤ 50`）；若请求行数超过 50，工具自动截断至前 50 行并在返回内容末尾附注提示，Agent 应通过递增 `start_line` 分页方式读取后续内容。
+- 返回原始文本（前缀各行行号以便于 `replace` 定位），若文件为二进制则返回提示信息。
+
+**`write_file`** — 创建或覆盖文件
+- 整体覆盖语义：使用前须确认不需要保留原有内容，或已通过 `read_file` 取得原内容并在新内容中完整保留。
+- 文件所在目录不存在时自动创建。
+- 适合生成新文件、重写配置文件等场景；修改现有文件推荐优先使用 `replace`。
+
+**`replace`** — 精确局部编辑
+- 定位 `old_string`（须在文件中精确出现）并替换为 `new_string`，不影响文件其余部分。
+- `allow_multiple`（默认 `false`）：为 `false` 时若 `old_string` 出现多于 1 次则返回错误，不执行修改；为 `true` 时替换所有匹配处。
+- `instruction` 为必填的语义说明字段（如"修复拼写错误"、"更新 worker_processes 值"），用于审计日志和自动重试的上下文记录。
+- 比 `write_file` 更安全，所有对现有文件的局部修改均推荐优先使用 `replace`。
+
+**`run_shell_command`** — Shell 命令执行
+- 通过 PTY（伪终端）运行，支持 `sudo`、`vim`、`htop` 等需要 TTY 的 CLI 程序。
+- `description`（必填）：对本次命令的安全审计说明，执行前对用户展示，同时写入审计日志。
+- `dir_path`：指定工作目录；不填则默认在项目根目录执行。
+- `is_background`（默认 `false`）：`false` 为前台阻塞执行，返回完整 stdout+stderr 与退出码；`true` 为后台运行，立即返回 PID。
+- `delay_ms`：仅在 `is_background=true` 时有效，指定启动后等待多少毫秒再返回初始输出快照（用于确认进程已正常启动）。
+- 后台进程的状态查询与终止使用 `process` 工具。
+
+**`process`** — 后台进程管理
+- 管理 `run_shell_command`（`is_background=true`）启动的后台进程生命周期。
+- `status`：查询指定 PID 的运行状态（running / exited / error）及退出码。
+- `read`：读取指定 PID 迄今产生的输出，支持 `offset`（行号）增量读取；**单次最多返回 50 行**，超出时自动截断并附提示，Agent 需递增 `offset` 分页读取后续内容。
+- `kill`：向指定 PID 发送终止信号（SIGTERM，超时后 SIGKILL）。
+- 适用场景：监控长期运行服务（nginx、mysql）、追踪 `tail -f` 日志流、管理耗时批量任务。
+
+#### 安全约束
+
+- `run_shell_command` 和 `process` 工具须记录所有调用（命令/PID、时间、退出码、stdout 摘要）到审计日志（OWASP A09）。
+- `write_file` 工具须在写入前记录目标路径与内容摘要到审计日志。
+- `replace` 工具须记录 `file_path`、`instruction`、`old_string` 摘要与 `new_string` 摘要到审计日志。
+- `run_shell_command` 的 `description` 字段为必填，用于审计日志中记录操作意图，不得为空字符串。
+- 工具不在 Python 层面校验命令合法性；命令级别的操作边界由 `RMAN.md` 的行为约束定义，LLM 在推理阶段决策是否应该执行。
+- `run_shell_command` 底层使用 PTY，前台模式须设置严格的 `timeout`（通过 agent 配置项 `tool_timeout` 控制）；后台进程须有最大存活时间上限（默认 `process_session_max_ttl: 3600s`）。
+
+#### 工具注册机制
+
+```python
+from typing import Callable, TypedDict
+
+class ToolDefinition(TypedDict):
+    name: str           # 工具名（与 TOOL.md 中一致）
+    description: str    # 工具用途描述（注入到 LLM prompt）
+    parameters: dict    # JSON Schema 格式的参数描述
+    func: Callable      # 实际执行函数
+```
+
+工具注册表为全局字典 `TOOL_REGISTRY: dict[str, ToolDefinition]`，支持在 `plugins/` 目录下热加载自定义工具。内置的 5 个工具（`read_file`、`write_file`、`replace`、`run_shell_command`、`process`）在框架初始化时自动注册，各工具的 `description` 字段同时用于：① 在 `TOOL.md` 不存在时依据内置模板生成 `TOOL.md` 文件；② 在 `TOOL.md` 不存在时直接内联注入 System Prompt。若 `TOOL.md` 已存在，框架不覆盖或修改它，直接读取使用。
+
+---
+
+### FR-003: 动态 System Prompt 机制
+
+**描述**: r-man 的 System Prompt 不是硬编码字符串，而是在每次 Agent 会话启动时，从两个用户可编辑的 Markdown 文件动态读取并组装生成。
+
+#### 3.3.1 组成文件
+
+| 文件 | 职责 | 可编辑性 |
+| :--- | :--- | :--- |
+| `RMAN.md` | 定义 Agent 的角色、目标、行为约束、操作边界 | 用户可自由编辑 |
+| `TOOL.md` | 描述所有可用工具的用途、参数说明与使用示例 | 系统自动生成初始版本，用户可追加补充说明 |
+
+#### 3.3.2 组装规则
+
+最终 System Prompt 按以下模板拼接。其中**工具描述段**优先从 `TOOL.md` 读取；若 `TOOL.md` 不存在，则框架先依据内置模板生成 `TOOL.md` 文件，再读取其内容注入。**工具描述是 System Prompt 的强制组成部分**，任何情况下都不可省略，以确保 LLM 始终能看到准确的工具调用规范：
+
+```
+{RMAN.md 全文内容}
+
+---
+
+## 可用工具
+
+{TOOL.md 全文内容  ↑ 若文件不存在，框架先从 TOOL_REGISTRY 依据模板生成 TOOL.md，再读取注入；已存在则直接读取，不覆盖}
+
+---
+
+## 输出格式规范
+
+当你需要调用工具时，必须严格按照以下格式输出：
+
+Thought: <你的推理过程>
+Action: {"tool": "<工具名>", "parameters": {<参数 JSON>}}
+
+当任务完成时，输出：
+
+Final Answer: <面向用户的最终答案>
+```
+
+#### 3.3.3 热重载机制
+
+- Agent 在每次新会话（新的用户消息触发）启动时，**重新读取** `RMAN.md` 和 `TOOL.md`。
+- 无需重启进程，修改文件后的下一次对话即生效。
+- 文件读取失败（文件不存在或解析错误）时，回退到内嵌的默认 prompt，并在日志中记录 Warning。
+
+#### 3.3.4 默认内嵌 Prompt（兜底）
+
+当 `RMAN.md` 不存在时，使用以下默认内容：
+
+```markdown
+# r-man
+
+你是一个专业的 Linux 系统运维 AI Agent，名为 r-man。
+你的目标是帮助运维工程师完成 Linux 系统的日常维护工作。
+在执行任何操作前，先分析任务，再选择合适的工具。
+对于危险操作，先说明你的计划，再执行。
+```
+
+---
+
+### FR-004: LLM 后端适配层
+
+**描述**: r-man 须对接 LLM 调用进行统一抽象，支持替换不同的 LLM Provider，不与特定 API 绑定。
+
+**支持的 Provider**:
+- OpenAI API（`gpt-4o`、`gpt-4-turbo` 等）
+- 任何兼容 OpenAI API 规范的本地或私有化模型（如 Ollama、vLLM）
+
+**抽象接口**:
+
+```python
+from abc import ABC, abstractmethod
+from typing import Iterator
+
+class LLMBackend(ABC):
+    @abstractmethod
+    def chat(
+        self,
+        messages: list[dict],
+        stream: bool = False,
+    ) -> str | Iterator[str]:
+        """发送对话请求，支持流式与非流式两种模式"""
+        ...
+```
+
+**配置示例**:
+
+```yaml
+llm:
+  provider: "openai"           # 支持: openai, ollama, custom
+  base_url: "${LLM_BASE_URL:-https://api.openai.com/v1}"  # LLM 接入点，支持环境变量覆盖
+  api_key: "${OPENAI_API_KEY}"                             # API 密钥，必须通过环境变量注入
+  model: "gpt-4o"
+  temperature: 0.2             # 运维场景建议低温度，保证确定性
+  context_window: 128000       # 模型上下文窗口大小（token 数），达 80% 时触发上下文压缩
+  max_tokens: 4096             # 单次 LLM 响应最大生成 token 数
+  timeout: 60
+```
+
+---
+
+### FR-005: Agent 运行配置管理
+
+**描述**: r-man 的所有运行时参数须集中在配置文件中管理，支持环境变量覆盖。
+
+**配置文件路径**: `config/config.yaml`（默认），可通过 `--config` 命令行参数指定。
+
+**完整配置结构**:
+
+```yaml
+agent:
+  max_iterations: 20           # ReAct 最大迭代次数
+  tool_timeout: 30             # 单个工具执行超时（秒）
+  process_session_max_ttl: 3600 # 后台进程最大存活时间（秒）
+  prompt_files:
+    rman_md: "./RMAN.md"       # RMAN.md 路径（相对于项目根目录）
+    tool_md: "./TOOL.md"       # TOOL.md 路径；不存在时自动从模板生成，已存在不覆盖
+  audit_log_path: "./logs/audit.log"
+
+llm:
+  provider: "openai"           # 支持: openai, ollama, custom
+  base_url: "${LLM_BASE_URL:-https://api.openai.com/v1}"  # LLM 接入点，支持环境变量覆盖
+  api_key: "${OPENAI_API_KEY}"                             # API 密钥，必须通过环境变量注入
+  model: "gpt-4o"
+  temperature: 0.2
+  context_window: 128000       # 模型上下文窗口大小（token 数），达 80% 时触发上下文压缩
+  max_tokens: 4096             # 单次 LLM 响应最大生成 token 数
+  timeout: 60
+
+feishu:                        # 飞书集成配置，详见 REQ-FEISHU-001
+  # ...（见飞书需求文档）
+```
+
+---
+
+## 4. 非功能需求
+
+### NFR-001: 安全性
+
+- `exec` 工具的所有调用须在审计日志中完整记录（命令、时间、执行结果摘要）。
+- `OPENAI_API_KEY` 等敏感信息必须通过环境变量注入，严禁明文写入配置文件或 Git 仓库（`.gitignore` 须包含 `.env` 和 `config/secrets.yaml`）。
+- System Prompt 的组装须对 `RMAN.md`/`TOOL.md` 文件内容进行长度限制（默认最大 32KB），防止异常大文件导致 Token 超出。
+
+### NFR-002: 可观测性
+
+- **ReAct 轨迹日志**: 每轮迭代的 Thought、Action、Observation 须以结构化 JSON 写入日志，便于调试和分析 Agent 决策。
+- **审计日志**: `exec`、`write_file` 的每次调用须持久化记录，字段：`timestamp`、`tool`、`parameters`（脱敏）、`result_summary`、`session_id`。
+- **Prompt 版本记录**: 每次会话须记录当时使用的 `RMAN.md` 和 `TOOL.md` 的文件哈希（MD5），用于追溯 Agent 行为。
+
+### NFR-003: 可扩展性
+
+- 工具注册采用插件化机制，可在 `plugins/` 目录下添加新工具，无需修改核心框架。
+- LLM 后端通过适配器模式抽象，新增 Provider 只需实现 `LLMBackend` 接口。
+
+### NFR-004: 可靠性
+
+- Agent 运行期间，单个工具调用异常（如命令超时、文件不存在）不应导致整个 Agent 进程崩溃；异常须被捕获并转为 `Observation` 注入上下文。
+- Python 代码须通过 `mypy --strict` 类型检查。
+
+---
+
+## 5. 核心流程图
+
+### 5.1 Agent 完整执行序列
+
+```mermaid
+sequenceDiagram
+    participant User as 用户（飞书 or CLI）
+    participant AgentRunner as Agent 执行引擎
+    participant PromptBuilder as Prompt 构建器
+    participant LLM as LLM 后端
+    participant ToolRegistry as 工具注册表
+    participant AuditLog as 审计日志
+
+    User->>AgentRunner: 下达任务（自然语言）
+    AgentRunner->>PromptBuilder: 请求构建 System Prompt
+    PromptBuilder->>PromptBuilder: 读取 RMAN.md + TOOL.md
+    PromptBuilder-->>AgentRunner: 返回组装好的 System Prompt
+
+    loop ReAct 迭代（最多 max_iterations 次）
+        AgentRunner->>LLM: 发送 messages（含历史上下文）
+        LLM-->>AgentRunner: 返回 Thought + Action / Final Answer
+
+        alt 输出为 Action
+            AgentRunner->>ToolRegistry: 查找并执行工具
+            ToolRegistry->>AuditLog: 记录工具调用（exec/write_file）
+            ToolRegistry-->>AgentRunner: 返回 Observation
+            AgentRunner->>AgentRunner: 将 Thought+Action+Observation 追加到 messages
+        else 输出为 Final Answer
+            AgentRunner-->>User: 返回最终答案
+        end
+    end
+
+    AgentRunner-->>User: 超出迭代限制，返回当前摘要
+```
+
+### 5.2 动态 System Prompt 组装流程
+
+```mermaid
+flowchart LR
+    A["RMAN.md\n（用户编辑）"] --> C[Prompt 构建器]
+    B["TOOL.md\n（系统生成 + 用户补充）"] --> C
+    C --> D{"文件读取\n是否成功？"}
+    D -- "成功" --> E[按模板拼接\nSystem Prompt]
+    D -- "失败/文件缺失" --> F[使用内嵌默认 Prompt\n记录 Warning 日志]
+    E --> G[注入 Agent 对话上下文]
+    F --> G
+```
+
+---
+
+## 6. 数据契约
+
+### 6.1 工具调用结构
+
+```python
+from pydantic import BaseModel
+from typing import Any
+
+class ToolCall(BaseModel):
+    tool: str                   # 工具名（与 TOOL_REGISTRY 键对应）
+    parameters: dict[str, Any]  # 工具参数
+
+class ToolResult(BaseModel):
+    tool: str
+    success: bool
+    output: str                 # stdout/文件内容/错误信息（统一字符串）
+    elapsed_seconds: float      # 执行耗时
+```
+
+### 6.2 Agent 消息结构（对接 LLM）
+
+```python
+from typing import Literal
+from pydantic import BaseModel
+
+class Message(BaseModel):
+    role: Literal["system", "user", "assistant"]
+    content: str
+
+# 一次完整会话的 messages 列表示例：
+# [
+#   Message(role="system", content="<组装后的 System Prompt>"),
+#   Message(role="user", content="清理 web-01 上超过 7 天的日志"),
+#   Message(role="assistant", content="Thought: ...\nAction: {...}"),
+#   Message(role="user", content="Observation: <工具输出>"),
+#   ...
+# ]
+```
+
+### 6.3 Agent 会话审计记录
+
+```python
+from pydantic import BaseModel
+from datetime import datetime
+
+class AgentAuditRecord(BaseModel):
+    session_id: str             # 会话唯一 ID（UUID）
+    timestamp: datetime         # 时间（UTC）
+    iteration: int              # 当前迭代轮次
+    tool_called: str | None     # 工具名（若本轮有工具调用）
+    parameters_digest: str      # 参数摘要（长命令截断，避免日志爆炸）
+    result_summary: str         # 结果摘要（前 500 字符）
+    rman_md_hash: str           # 本次会话使用的 RMAN.md 文件 MD5
+    tool_md_hash: str           # 本次会话使用的 TOOL.md 文件 MD5
+```
+
+---
+
+## 7. RMAN.md 与 TOOL.md 规范
+
+### 7.1 RMAN.md — 角色与行为定义文件
+
+`RMAN.md` 是 r-man 的"人格设定"文件，决定 Agent 的行为边界。以下是官方推荐的章节结构（用户可按需增删）：
+
+```markdown
+# r-man — 角色定义
+
+## 身份
+
+你是一个专业的 Linux 系统运维 AI Agent，名为 r-man。
+你部署在 [公司名] 的运维环境中，负责以下服务器的日常维护：
+- web-prod-01, web-prod-02（生产 Web 服务器）
+- db-staging-01（数据库测试服务器）
+
+## 行为准则
+
+1. **先分析，后执行**：对于任何操作，先用 Thought 说明你的计划，再 Action。
+2. **保守原则**：在不确定的情况下，优先选择只读操作（read_file）进行调查，再决定是否执行写操作。
+3. **禁止操作**：
+   - 禁止直接操作 /etc/passwd, /etc/shadow 文件
+   - 禁止删除 /var/log/ 下超过 1GB 的日志文件（需先 list_dir 确认大小）
+   - 禁止在生产数据库服务器（db-prod-*）上执行任何写操作
+
+## 响应风格
+
+- 最终答案须包含：操作摘要、执行结果、建议后续观察项。
+- 使用中文回复。
+```
+
+### 7.2 TOOL.md — 工具使用说明文件
+
+`TOOL.md` 描述所有可用工具的语义、参数说明与使用示例，是 LLM 理解如何调用工具的核心参考。**此文件的内容会在每次会话启动时被完整注入到 System Prompt 的"可用工具"段中**。
+
+**生成策略（幂等）**: 框架启动时检查 `TOOL.md` 是否存在：若**不存在**，则依据内置模板自动生成完整的 `TOOL.md` 文件（包含 5 个内置工具的签名、参数与示例），并记录 Info 日志；若**已存在**，则直接读取使用，不做任何覆盖或修改。用户可在已生成的 `TOOL.md` 中自由追加**补充说明、使用场景建议、禁止事项**，框架不会在下次启动时将其清除。
+
+以下为系统自动生成的初始 `TOOL.md` 参考样式（5 个内置工具）：
+
+```markdown
+# 可用工具说明
+
+> 调用格式：Action: {"tool": "<工具名>", "parameters": {<参数 JSON>}}
+> 工具执行异常时会返回错误描述字符串，应在下一轮 Thought 中决策如何处理。
+
+---
+
+## read_file
+
+读取指定文件的内容。支持按行范围分页读取，避免大文件一次性占用过多 token。
+
+**参数**:
+- `path` (string, 必填): 目标文件的绝对路径
+- `start_line` (number, 可选): 起始行号（1-based，含）；不填则从第 1 行开始
+- `end_line` (number, 可选): 结束行号（1-based，含）；不填则默认读取从 `start_line` 起最多 50 行
+- **单次最多读取 50 行**；超过时自动截断并在结尾附注提示，Agent 需递增 `start_line` 分页读取
+
+**示例**:
+Action: {"tool": "read_file", "parameters": {"path": "/var/log/nginx/error.log"}}
+Action: {"tool": "read_file", "parameters": {"path": "/etc/nginx/nginx.conf", "start_line": 1, "end_line": 50}}
+
+---
+
+## write_file
+
+创建或整体覆盖写入文件。文件不存在时自动创建（含父目录）。
+使用前确认不需要保留原有内容，或已通过 read_file 获取原内容并完整保留在新内容中。
+修改现有文件推荐优先使用 replace。
+
+**参数**:
+- `path` (string, 必填): 目标文件的绝对路径
+- `content` (string, 必填): 要写入的完整内容
+
+**示例**:
+Action: {"tool": "write_file", "parameters": {"path": "/tmp/report.txt", "content": "磁盘使用正常\n检查时间: 2026-04-15"}}
+
+---
+
+## replace
+
+对文件进行手术式精确局部编辑：找到 old_string 并替换为 new_string，不影响文件其余部分。
+old_string 须精确匹配（包含空格、换行）。默认要求唯一匹配，可通过 allow_multiple 启用全局替换。
+推荐优先使用 replace 而非 write_file 来修改现有文件。
+
+**参数**:
+- `file_path` (string, 必填): 目标文件的绝对路径
+- `old_string` (string, 必填): 待替换的完整且精确的旧文本；未设置 allow_multiple 时若不唯一则报错
+- `new_string` (string, 必填): 替换后的新文本
+- `instruction` (string, 必填): 对本次修改的语义说明（如"修复拼写错误"、"更新 worker_processes 值"），用于审计与重试
+- `allow_multiple` (boolean, 可选, 默认 false): 为 true 时替换所有匹配的 old_string
+
+**示例**:
+Action: {"tool": "replace", "parameters": {"file_path": "/etc/nginx/nginx.conf", "old_string": "worker_processes 1;", "new_string": "worker_processes 4;", "instruction": "提升 nginx worker 进程数以匹配 CPU 核心数"}}
+
+---
+
+## run_shell_command
+
+通过 PTY（伪终端）在服务器上执行 Shell 命令。支持前台阻塞执行与后台异步执行两种模式。
+支持需要 TTY 的 CLI 程序（如 sudo、vim、htop）。
+耗时超过 60 秒的命令推荐使用 is_background=true 以后台方式运行，通过 process 工具管理。
+
+**参数**:
+- `command` (string, 必填): 要执行的完整 Bash 命令
+- `description` (string, 必填): 安全审计说明，描述本次命令的目的（如"查看磁盘使用情况"），不得为空
+- `dir_path` (string, 可选): 指定执行命令的工作目录；不提供则默认在项目根目录执行
+- `is_background` (boolean, 可选, 默认 false): false=前台阻塞，返回完整输出；true=后台运行，返回 PID
+- `delay_ms` (number, 可选): 仅 is_background=true 时有效，启动后等待指定毫秒再返回初始输出快照
+
+**前台示例**:
+Action: {"tool": "run_shell_command", "parameters": {"command": "df -h /", "description": "查看根分区磁盘使用情况"}}
+Action: {"tool": "run_shell_command", "parameters": {"command": "systemctl status nginx", "description": "检查 nginx 服务运行状态"}}
+
+**后台示例**:
+Action: {"tool": "run_shell_command", "parameters": {"command": "tail -f /var/log/syslog", "description": "后台监控系统日志流", "is_background": true, "delay_ms": 500}}
+
+---
+
+## process
+
+管理 run_shell_command（is_background=true）启动的后台进程生命周期。
+
+**action=status**: 查询进程状态（running/exited/error）及退出码
+- `pid` (number, 必填): run_shell_command 返回的 PID
+
+**action=read**: 读取进程输出，支持 offset 增量读取
+- `pid` (number, 必填)
+- `offset` (number, 可选, 默认 0): 从第几行开始读取
+- **单次最多返回 50 行**；超出时自动截断并在结尾附注提示，Agent 需递增 offset 分页读取后续内容
+
+**action=kill**: 终止进程（SIGTERM，超时后 SIGKILL）
+- `pid` (number, 必填)
+
+**示例**:
+Action: {"tool": "process", "parameters": {"action": "status", "pid": 12345}}
+Action: {"tool": "process", "parameters": {"action": "read", "pid": 12345, "offset": 0}}
+Action: {"tool": "process", "parameters": {"action": "kill", "pid": 12345}}
+```
+
+> **扩展说明**: 随着运维场景的丰富，后续可在 `plugins/` 目录中注册更多工具（如 `ssh_exec` 跨主机执行、`http_request` API 探测等）。新工具注册后，`TOOL.md` 将在下次启动时自动追加对应的描述节，并自动注入到 System Prompt 中。
+
+---
+
+## 8. 约束与假设
+
+| 编号 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| C-001 | 约束 | r-man 运行的 Python 版本须为 3.12+，依赖安装于 `./venv` |
+| C-002 | 约束 | `run_shell_command` 工具在 r-man 进程所在服务器上执行命令，无跨主机 SSH 能力（跨主机能力属于独立扩展需求） |
+| C-003 | 约束 | `RMAN.md` 和 `TOOL.md` 的内容长度合计不得超过 32KB，超限时截断并记录 Warning |
+| C-004 | 约束 | LLM 须支持 OpenAI Chat Completions API 格式，Function Calling 为可选特性 |
+| A-001 | 假设 | 运维人员了解基本的 Markdown 格式，可自行编辑 `RMAN.md` |
+| A-002 | 假设 | `TOOL.md` 采用幂等生成策略：框架仅在文件不存在时依据模板生成，用户可自由追加内容；已存在时框架直接读取，不覆盖 |
+| A-003 | 假设 | ReAct 框架使用文本解析（非 Function Calling API），以兼容更广泛的 LLM 后端 |
+
+---
+
+## 9. 验收标准
+
+| AC 编号 | 关联需求 | 验收标准描述 |
+| :--- | :--- | :--- |
+| AC-001 | BR-001 | 下达"查看 /var/log 下最大的 5 个文件"任务，r-man 在 3 轮以内通过 `run_shell_command`（du/find 命令）完成，返回正确结果 |
+| AC-002 | BR-001 | 下达"清理 /tmp 下超过 7 天的 .log 文件"任务，r-man 先用 `run_shell_command` 调查，再用 `run_shell_command` 清理，最后报告删除文件列表 |
+| AC-003 | BR-002 | 在 RMAN.md 中增加"禁止访问 /etc/passwd"规则，验证下一次对话中 r-man 拒绝执行 `read_file /etc/passwd` |
+| AC-004 | BR-002 | 修改 RMAN.md 后，无需重启 r-man 进程，下一次对话即感知到新规则 |
+| AC-005 | BR-003 | 全部 5 个内置工具（read_file/write_file/replace/run_shell_command/process）可正常调用，返回预期格式；工具调用异常时返回错误字符串而非抛出异常 |
+| AC-006 | FR-002 | 使用 `replace` 修改 nginx.conf 的 worker_processes：old_string 唯一时修改成功；old_string 不唯一且 allow_multiple=false 时返回错误且文件未被修改 |
+| AC-007 | FR-002 | 使用 `run_shell_command`（is_background=true）启动 `tail -f /var/log/syslog`，随后 `process read` 获取输出，最后 `process kill` 终止，全流程正常 |
+| AC-008 | FR-001 | 当任务超出 20 轮迭代限制，r-man 强制终止并返回已完成步骤的摘要，不进入死循环 |
+| AC-009 | FR-003 | 删除 TOOL.md 后重启，框架自动从模板生成新的 TOOL.md，System Prompt 中包含完整工具描述，日志记录 Info；未删除时框架不覆盖已有 TOOL.md |
+| AC-010 | FR-003 | 删除 RMAN.md 后，r-man 自动使用内嵌默认 Prompt 运行，日志中出现 Warning 记录 |
+| AC-011 | FR-002 | 执行 `write_file`、`replace`（含 instruction）、`run_shell_command`（description 非空）、`process kill` 后，审计日志中各自记录对应条目，字段完整 |
+| AC-012 | FR-002 | `run_shell_command` 传入空字符串 description 时，工具拒绝执行并返回参数验证错误 |
+| AC-013 | NFR-004 | `mypy --strict` 对核心模块（agent、tools、prompt_builder）检查无错误 |
+| AC-014 | FR-004 | 修改配置文件中的 `llm.base_url` 和 `llm.model`，r-man 切换到不同 LLM endpoint，无需修改代码 |
+
+---
+
+## 10. 关联文档
+
+- [docs/requirements/index.md](../index.md) — 需求文档总索引
+- [docs/requirements/feishu-integration/REQ-FEISHU-001.md](../feishu-integration/REQ-FEISHU-001.md) — 飞书通信集成需求
+- [docs/design/ARCH_OVERVIEW.md](../../design/ARCH_OVERVIEW.md) — r-man 整体架构概览（待创建）
+- [docs/design/core-agent/](../../design/core-agent/) — 核心 Agent 详细设计（待创建）
