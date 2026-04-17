@@ -15,6 +15,7 @@
 - **Body**: 
     - 关键结果使用 `column_set` 进行分栏展示。
     - 长文本使用支持 Markdown 子集的 `div` 模块。
+- **Table Support**: 当需要展示结构化列表（如进程清单、文件属性）时，允许并在 Prompt 中引导模型产出符合卡片 2.0 规范的 `table` 标签结构（包含 `columns` 和 `rows` 数组）。
 - **Status Bar**: 使用 `column_set` 实现左右对称布局，左侧显示模型名，右侧显示 Token 消耗。
 - **Color Coding**: 
     - 成功: `text_color:green`

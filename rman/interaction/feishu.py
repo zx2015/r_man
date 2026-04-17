@@ -88,11 +88,23 @@ class FeishuInteraction:
         """调用真实的 AgentRunner 进行推理处理"""
         from rman.agent.runner import AgentRunner
         logger.info(f"Task started for message {message_id}: {text}")
+
         try:
-            # 初始化并运行 Agent
             runner = AgentRunner(session_id=message_id)
-            final_answer, usage = await runner.run(text)
-            
+
+            # 定义回调逻辑
+            async def intermediate_callback(content: str):
+                if config.agent.enable_intermediate_status:
+                    await self._send_card(
+                        chat_id, 
+                        "⚙️ R-MAN 执行中...", 
+                        content, 
+                        template="turquoise" # 使用青色区分中间过程
+                    )
+
+            # 运行 Agent 并传入回调
+            final_answer, usage = await runner.run(text, on_intermediate_status=intermediate_callback)
+
             # 发送结果卡片
             await self._send_card(
                 chat_id, 
@@ -102,6 +114,7 @@ class FeishuInteraction:
                 usage=usage
             )
             logger.info(f"Task finished for message {message_id}")
+
 
             
         except Exception as e:
@@ -117,13 +130,42 @@ class FeishuInteraction:
         """发送组件化交互式卡片消息"""
         from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
         
-        # 1. 基础正文部分
-        elements = [
-            {
+        elements = []
+        
+        # 1. 尝试解析 content_md。如果包含组件 JSON，则分离渲染
+        # 这是一个简单的实现：查找文本中是否包含类似 {"tag": "table" ...} 的块
+        import re
+        component_pattern = r'(\{[\s\n]*"tag"[\s\n]*:[\s\n]*"(table|column_set|div)"[\s\n]*,.*?\})'
+        matches = list(re.finditer(component_pattern, content_md, re.DOTALL))
+        
+        if matches:
+            last_pos = 0
+            for match in matches:
+                # 添加组件前的纯文本
+                text_before = content_md[last_pos:match.start()].strip()
+                if text_before:
+                    elements.append({"tag": "div", "text": {"tag": "lark_md", "content": text_before}})
+                
+                # 添加组件本身
+                try:
+                    comp_json = json.loads(match.group(1))
+                    elements.append(comp_json)
+                except Exception as e:
+                    logger.error(f"Failed to parse component JSON in content: {e}")
+                    elements.append({"tag": "div", "text": {"tag": "lark_md", "content": match.group(1)}})
+                
+                last_pos = match.end()
+            
+            # 添加剩余文本
+            text_after = content_md[last_pos:].strip()
+            if text_after:
+                elements.append({"tag": "div", "text": {"tag": "lark_md", "content": text_after}})
+        else:
+            # 无组件，纯 Markdown
+            elements.append({
                 "tag": "div",
                 "text": {"tag": "lark_md", "content": content_md}
-            }
-        ]
+            })
         
         # 2. 如果提供了 usage，增加分栏展示
         if usage:

@@ -39,15 +39,23 @@ flowchart TD
 - 除非是需要向用户解释的多步流程，否则直接在回复中触发 `tool_calls`。
 - 文本回退模式下的工具名称必须精确对齐。
 
+### 2.2 安全 (目录隔离与隐私保护)
+**核心提示语**: 
+1. 内部工具 read, write, replace 只能操作工作目录下的文件，对工作目录外的文件不能读写。
+2. 严禁删除或修改当前工作目录下的 `RMAN.md` 和 `TOOLS.md`。
+3. 严禁在任何情况下透露隐私信息（Key、密码等）。
+4. **破坏性操作确认**: 在执行删除（rm）、强制停止进程（kill）等破坏性操作前，必须先在 `<final>` 标签中向用户解释计划，并显式等待用户回复“确认”后方可执行。
+
 ### 2.3 飞书界面呈现准则 (UI Rendering)
 为了在飞书卡片中达到最佳显示效果，LLM 必须遵循：
 1.  **Header Icons**: 在 `<final>` 开头使用 ✅/❌/⚠️ 表示状态。
-2.  **No Tables**: 严禁使用 Markdown 表格，改用列表（`-` 或 `1.`）。
+2.  **Native Table**: 展示列表数据时，必须产出合法的 JSON 表格标签：
+    `{ "tag": "table", "columns": [...], "rows": [...] }`。
 3.  **Title Limit**: 仅允许使用 `#` 和 `##`。
 4.  **Color Highlighting**: 对关键文本使用 `[文本内容](text_color:颜色名)`，常用颜色：`green`, `red`, `blue`, `grey`。
 5.  **Clean Code**: 代码块必须标明语言，如 ` ```python `。
 
-### 2.3 动态注入项
+### 2.4 动态注入项
 - **工作目录**: 调用 `os.path.abspath(workspace_dir)`。
 - **时间**: 使用 `datetime.now(timezone.utc)` 并格式化。
 

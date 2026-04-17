@@ -12,6 +12,7 @@ class AgentConfig(BaseModel):
     process_session_max_ttl: int = 3600
     audit_log_path: str = "./logs/audit.log"
     workspace_dir: str = "workspace"
+    enable_intermediate_status: bool = True
 
 class LLMConfig(BaseModel):
     provider: str = "openai"

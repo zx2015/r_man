@@ -4,6 +4,7 @@ agent:
   process_session_max_ttl: 3600
   audit_log_path: "./logs/audit.log"
   workspace_dir: "@workspace/"
+  enable_intermediate_status: true
 
 llm:
   provider: "openai"

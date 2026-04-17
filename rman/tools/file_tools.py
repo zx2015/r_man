@@ -55,8 +55,14 @@ class WriteFileTool(BaseTool):
         workspace = os.path.abspath(config.agent.workspace_dir.replace("@", ""))
         target_path = os.path.abspath(os.path.join(workspace, path))
 
+        # 1. 目录隔离校验
         if not target_path.startswith(workspace):
             return f"Error: 权限拒绝。只能写入工作目录 {workspace} 内的文件。"
+        
+        # 2. 核心文件保护校验
+        filename = os.path.basename(target_path)
+        if filename in ["RMAN.md", "TOOLS.md"]:
+            return f"Error: 权限拒绝。系统核心配置文件 `{filename}` 为只读，请通过外部编辑器修改。"
 
         try:
             os.makedirs(os.path.dirname(target_path), exist_ok=True)
@@ -84,8 +90,14 @@ class ReplaceTool(BaseTool):
         workspace = os.path.abspath(config.agent.workspace_dir.replace("@", ""))
         target_path = os.path.abspath(os.path.join(workspace, file_path))
 
+        # 1. 目录隔离校验
         if not target_path.startswith(workspace):
             return f"Error: 权限拒绝。只能操作工作目录 {workspace} 内的文件。"
+
+        # 2. 核心文件保护校验
+        filename = os.path.basename(target_path)
+        if filename in ["RMAN.md", "TOOLS.md"]:
+            return f"Error: 权限拒绝。系统核心配置文件 `{filename}` 为只读，请通过外部编辑器修改。"
 
         if not os.path.exists(target_path):
             return f"Error: 文件 {file_path} 不存在。"

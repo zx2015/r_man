@@ -1,6 +1,6 @@
 import re
 import json
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple, Optional, Callable, Coroutine
 from loguru import logger
 from rman.common.config import config
 from rman.agent.backend import llm_backend
@@ -14,7 +14,7 @@ class AgentRunner:
         self.max_iterations = config.agent.max_iterations
         self.messages: List[Dict[str, str]] = []
 
-    async def run(self, user_input: str) -> Tuple[str, Dict[str, Any]]:
+    async def run(self, user_input: str, on_intermediate_status: Optional[Callable[[str], Coroutine[Any, Any, None]]] = None) -> Tuple[str, Dict[str, Any]]:
         """运行 ReAct 循环直到产生最终结果。返回 (答案, 元数据)"""
         # 获取工具定义
         tool_descriptions = tool_registry.generate_tools_description()
@@ -80,6 +80,25 @@ class AgentRunner:
                         logger.error(f"Failed to parse native tool arguments: {tc.function.arguments}")
             elif text_actions:
                 actions_to_run = text_actions
+
+            # --- 新增：触发中间状态回调 (方案 A: 自动生成) ---
+            if actions_to_run and on_intermediate_status:
+                for action in actions_to_run:
+                    tool_name = action.get("tool")
+                    params = action.get("parameters", {})
+                    # 优先从参数中提取人类可读的意图
+                    intent = params.get("description") or params.get("instruction")
+                    
+                    if final:
+                        desc = final
+                    elif intent:
+                        desc = f"✅ 准备执行 `{tool_name}`：{intent}"
+                    else:
+                        desc = f"⚙️ 正在调用工具 `{tool_name}`..."
+                    
+                    logger.info(f"Triggering intermediate status update: {desc}")
+                    await on_intermediate_status(desc)
+                    break # 每轮迭代仅发送一条预告，避免卡片爆炸
 
             # 4. 执行工具
             if actions_to_run:

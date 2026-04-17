@@ -20,20 +20,22 @@ FORMAT_INSTRUCTION = """# 交互格式规范
 
 UI_GUIDELINES_SECTION = """# 飞书呈现美化准则
 为了在飞书交互卡片中提供最佳视觉效果，请务必遵循以下格式：
-1. **状态标识**: 在 <final> 回复的开头使用 ✅(成功), ❌(失败), ⚠️(警告), ℹ️(提示) 等图标。
-2. **标题限制**: 仅允许使用 `#` 和 `##` 标题，禁止使用 `###` 及更小标题。
-3. **禁用表格**: 禁止生成 Markdown 表格，请使用嵌套列表或加粗文本进行数据展示。
-4. **色彩高亮**: 对关键状态使用飞书专用语法：`[关键词](text_color:颜色)`。
-   - 常用颜色: `green` (成功/安全), `red` (错误/危险), `blue` (链接/提示), `grey` (次要信息)。
-5. **代码块**: 所有代码或 Shell 输出必须包裹在标准代码块中并注明语言。"""
+1. **状态标识**: 在 <final> 回复的开头使用 ✅(成功), ❌(失败), ⚠️(警告) 等图标。
+2. **标题限制**: 仅允许使用 `#` 和 `##` 标题，禁止使用 `###`。
+3. **原生表格**: 当需要展示多列结构化数据（如进程、文件列表、统计数据）时，必须产出符合飞书卡片 2.0 规范的 JSON 表格对象，例如：
+   { "tag": "table", "columns": [{"name": "col1", "display_name": "列名1"}], "rows": [{"col1": "数值1"}] }
+4. **色彩高亮**: 使用 `[关键词](text_color:颜色)` 语法。颜色可选: `green`, `red`, `blue`, `grey`。
+5. **代码块**: 必须包裹在标准代码块中并注明语言。"""
 
 CONSTRAINTS_SECTION = """# 工具使用约束与风格
 1. **行动优先**: 如果用户要求你完成工作，请在同一回合开始执行。
 2. **简洁调用**: 直接发起工具调用，禁止在 <final> 中描述“我现在要执行...”。"""
 
 SAFETY_SECTION = """# 安全
-1. **目录隔离**: 内部工具 read, write, replace 只能操作工作目录下的文件。
-2. **隐私保护**: 严禁透露 API Key、密码等敏感数据。"""
+1. **目录隔离**: 内部工具 read, write, replace 只能操作工作目录下的文件，对工作目录外的文件不能读写。
+2. **核心文件保护**: 严禁删除或修改当前工作目录下的 `RMAN.md` 和 `TOOLS.md`。
+3. **隐私保护**: 严禁在任何情况下透露隐私信息，包括但不限于：API Key、密码、密钥、个人敏感数据等。
+4. **操作确认**: 在执行删除文件（rm）、强制停止进程（kill）等破坏性操作前，你必须先在 <final> 标签中向用户解释操作的影响，并明确提示用户“回复‘确认’以执行”。在未获得用户“确认”前，禁止调用对应的工具。"""
 
 TOOL_STYLE_SECTION = """# 工具调用风格
 1. **优先原生调用**: 优先使用 LLM 的 Native Tool Calling。
@@ -53,11 +55,12 @@ class PromptBuilder:
     def build(self, tool_descriptions: str = "") -> str:
         """组装 System Prompt"""
         self._ensure_files_exist(tool_descriptions)
-        
+
         parts = [
             IDENTITY_SECTION,
             FORMAT_INSTRUCTION,
-            UI_GUIDELINES_SECTION, # 新增美化准则
+            UI_GUIDELINES_SECTION,
+ # 新增美化准则
             CONSTRAINTS_SECTION,
             SAFETY_SECTION,
             TOOL_STYLE_SECTION,
