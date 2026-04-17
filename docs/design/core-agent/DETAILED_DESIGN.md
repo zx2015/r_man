@@ -75,14 +75,26 @@ Agent 的 `run` 方法是一个同步/异步阻塞过程，核心逻辑如下：
 
 ## 5. 上下文压缩算法 (Context Compression)
 
-为了维持长对话的有效性，`AgentRunner` 监测 Token 计数：
+为了维持长对话的有效性，`AgentRunner` 采用“分段摘要”机制：
 
-1.  **触发点**: `total_tokens >= context_window * 0.8`。
-2.  **压缩策略**:
-    - 保留 System Prompt（Index 0）和最近的 3 轮对话。
-    - 对中间的历史 `Observation` 消息，调用 LLM 进行“极简摘要”。
-    - 摘要格式：`[Observation Summary (轮次 X-Y): 执行了 ls -la，结果包含 5 个文件，其中 test.py 占用最大]`。
-    - 替换原消息，确保 `total_tokens <= context_window * 0.6`。
+### 5.1 消息序列分段 (Message Segmentation)
+压缩触发时，消息序列被划分为三部分：
+1.  **Fixed (Index 0)**: 永远保留的 System Prompt。
+2.  **Compressible (Index 1 to -N)**: 待压缩的历史中间过程（含以前的 Summary）。
+3.  **Preserved (Last N rounds)**: 保留最近 5 轮消息，确保当前推理的语义连贯性。
+
+### 5.2 压缩流程 (Compression Flow)
+1.  **Count**: 每一轮推理前调用 `tiktoken` (或估算函数) 计算 Token。
+2.  **Extract**: 提取 `Compressible` 部分的文本。
+3.  **Summarize**: 调用 LLM 专门的“压缩指令”生成技术摘要。
+4.  **Rewrite**: 
+    - 组合新的 `messages = [System, NewSummary, ...Preserved]`.
+    - 此时 `NewSummary` 包含历史所有的压缩记录。
+
+### 5.3 压缩指令 (Compression Prompt)
+> “你是一个上下文管理专家。请将以下历史对话过程总结为一段技术摘要。
+> 重点保留：已完成的任务目标、关键参数配置、重要的 Observation 数据。
+> 形式：使用时间轴或步骤列表，字数压缩率需达到 90% 以上。”
 
 ## 6. 工具注册与执行契约
 

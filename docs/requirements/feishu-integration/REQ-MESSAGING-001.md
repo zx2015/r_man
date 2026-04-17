@@ -22,6 +22,20 @@
     - 消耗: `text_color:grey`
     - 警告/错误: `text_color:red`
 
+### FR-004: 协作式渲染增强 (Smart Formatting)
+系统必须建立一套“Markdown 增强”流水线，将 LLM 产出的标准内容转化为飞书原生 UI 组件：
+
+1.  **表格自动转换 (Table Promotion)**:
+    - 系统必须能够识别标准 Markdown 文本表格（`|---|`）。
+    - 自动将识别到的表格转换为飞书卡片 2.0 的 `table` 标签组件，保留表头对齐语义。
+2.  **状态感知着色 (Header Auto-Color)**:
+    - 系统必须扫描 `<final>` 回复的第一行字符。
+    - ✅ -> 自动设置 Header 模板为 `green`。
+    - ❌ -> 自动设置 Header 模板为 `red`。
+    - ⚠️ -> 自动设置 Header 模板为 `orange`。
+    - ℹ️ 或其他 -> 默认 `blue`。
+3.  **间距补丁 (Spacer Injection)**: 自动确保列表与正文之间存在双换行隔离。
+
 
 ### FR-002: Token 消耗统计
 系统必须在单个用户消息处理任务完成后，计算并展示该任务产生的总消耗：

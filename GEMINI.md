@@ -64,7 +64,10 @@
 - **Python 版本**: 建议使用 Python 3.12（确保 Pydantic V1 兼容层稳定性）。
 - **虚拟环境**: 必须使用根目录下的 `./venv`。执行指令前需激活或使用全路径（如 `./venv/bin/python`）。
 - **依赖管理**: 第三方依赖安装在 `./venv` 中，禁止提交至 Git。
-- **Git 忽略 (Git Ignore)**: **CRITICAL: `./venv` 虚拟环境文件夹严禁提交至 Git 仓库。**
+- **Git 忽略 (Git Ignore)**: 
+    - **CRITICAL**: `./venv` 虚拟环境文件夹严禁提交至 Git 仓库。
+    - **SECURITY**: `logs/audit.log` 和 `data/memory.db` 包含敏感审计及记忆数据，严禁提交。
+    - **CONFIG**: `config/config.yaml` 包含私密凭证，严禁提交。
 
 ### 4.2 状态维护
 - **TODO.md (Root)**: 维护待澄清、待改进及用户反馈的事项。

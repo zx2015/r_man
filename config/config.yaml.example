@@ -12,8 +12,8 @@ llm:
   api_key: "sk-..."
   model: "gpt-4o"
   temperature: 0.2
-  context_window: 128000
-  max_tokens: 4096
+  context_window: 200000
+  max_tokens: 32768
   timeout: 60
 
 feishu:
@@ -36,3 +36,6 @@ memory:
   retrieval:
     top_k: 3
     score_floor: 0.0
+
+tavily:
+  api_key: "tvly-your-dummy-key-here"

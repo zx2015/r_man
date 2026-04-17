@@ -9,7 +9,9 @@ venv/
 config/config.yaml
 workspace/
 logs/
+logs/audit.log
 data/
+data/memory.db
 TODO.md
 
 # Gemini Learnings (Mandatory ignore)

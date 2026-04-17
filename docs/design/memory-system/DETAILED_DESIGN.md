@@ -1,74 +1,79 @@
-# DETAILED_DESIGN: 内存系统存储设计
+# DETAILED_DESIGN: 长期记忆系统详细设计
 
 | 版本号 | 日期 | 变更说明 | 作者 |
 | :--- | :--- | :--- | :--- |
-| v1.0.0 | 2026-04-16 | 初始版本，定义 SQLite 向量存储与检索流程 | Gemini CLI |
+| v2.0.0 | 2026-04-17 | 初始版本，定义脱敏摘要算法与 SQLite 向量存储 | Gemini CLI |
 
-## 1. 模块职责
+## 1. 核心流程：异步摘要存入 (Auto-Dump)
 
-内存系统（Memory System）负责将 Agent 的对话片段进行总结、向量化，并提供基于语义相似度的检索能力，实现 Agent 的“长期记忆”。
+```mermaid
+sequenceDiagram
+    participant A as AgentRunner
+    participant S as Summarizer
+    participant E as Embedding API
+    participant DB as SQLite (sqlite-vec)
 
-## 2. 存储选型：SQLite + sqlite-vec
+    A->>A: 产出 Final Answer
+    A->>S: 异步发送 (Messages)
+    S->>S: 执行脱敏 Prompt 蒸馏
+    S->>E: 请求向量化 (Summary Text)
+    E-->>S: 返回 1024-dim Vector
+    S->>DB: 写入 memory_entries & vectors
+```
 
-为了保持 r-man 的轻量级与易部署性，采用 SQLite 数据库配合向量搜索插件。
+## 2. 脱敏摘要指令 (Summarizer Prompt)
 
-### 2.1 数据库 Schema
+**Prompt 模板**:
+> “你是一个记忆构建专家。请将以下对话总结为一段简短的摘要。
+> 规则：
+> 1. 提取任务核心目标、成功执行的命令、以及用户的偏好。
+> 2. **隐私清理**: 严禁包含任何 Key、密码、IP 地址或敏感 Token。将它们替换为 `[REDACTED]`。
+> 3. 只输出摘要文本，不含任何解释。
+> 4. 语言必须与原文保持一致。”
 
+## 3. 存储引擎设计
+
+### 3.1 环境检测 (Bootstrap)
+```python
+def check_vector_extension():
+    try:
+        import sqlite_vec
+        conn = sqlite3.connect(":memory:")
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        # 验证
+        conn.execute("SELECT vec_version();")
+    except Exception:
+        print(">>> WARNING: sqlite-vec missing. Memory disabled.")
+```
+### 3.2 数据库 Schema
 ```sql
--- 内存条目元数据表
 CREATE TABLE IF NOT EXISTS memory_entries (
-    id TEXT PRIMARY KEY,           -- UUID
-    tag TEXT,                      -- 标签（如：topic-switch）
-    description TEXT,              -- 用户或系统生成的描述
-    summary TEXT NOT NULL,         -- 核心内容的总结文本
-    full_content TEXT NOT NULL,    -- 完整的对话 JSON 序列
+    id TEXT PRIMARY KEY,
+    summary TEXT NOT NULL,
+    tag TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    expires_at DATETIME            -- 过期时间，默认 7 天
+    expires_at DATETIME
 );
 
--- 向量索引表 (基于 sqlite-vec)
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors USING vec0(
     id TEXT PRIMARY KEY,
-    embedding FLOAT[1024]          -- 对应 BGE-M3 的维度
+    embedding float[1024]
 );
 ```
 
-## 3. 核心流程
+### 3.3 自动维护机制 (Background Maintenance)
+为了应对长期不重启的生产环境，系统实施双重清理策略：
+1.  **静态清理**: 每次程序启动时执行 `_cleanup_expired`。
+2.  **动态清理**: 主循环内置 24 小时计时器，每隔 24 小时自动触发一次过期记录物理删除，确保数据库体积受控。
 
-### 3.1 内存转储 (memory_dump)
 
-1.  **总结**: 调用 LLM 对当前 Session 的对话内容进行摘要（保留关键决策、命令执行结果、用户偏好）。
-2.  **向量化**: 调用 Embedding API（BGE-M3）将摘要文本转为 1024 维向量。
-3.  **持久化**:
-    - 在 `memory_entries` 插入元数据与总结。
-    - 在 `memory_vectors` 插入对应的向量。
-4.  **返回**: 返回内存 ID。
-
-### 3.2 内存检索 (memory_get)
-
-1.  **预处理**: 若输入是 `query`，则将其向量化。
-2.  **检索**: 
-    - 执行向量相似度搜索（Cosine Similarity）。
-    - 支持结合 `tag` 进行元数据过滤。
-3.  **重排序 (可选)**: 根据 `created_at` 对 Top-K 结果进行微调。
-4.  **返回**: 提取 `summary` 和 `full_content` 返回给 Agent。
-
-## 4. Embedding 配置与适配
-
-```yaml
-memory:
-  embedding:
-    base_url: "${EMBEDDING_BASE_URL}"
-    api_key: "${EMBEDDING_API_KEY}"
-    model: "BAAI/bge-m3"
-```
-
-通过 `EmbeddingClient` 类封装对 BGE-M3 的调用，支持异步批量请求以提高效率。
-
-## 5. 维护任务
-
-- **过期清理**: 系统启动时，自动删除 `expires_at < NOW()` 的记录。
-- **空间控制**: 超过 100 条记录时，按 LRU（最近最少使用）原则清理。
+## 4. 检索策略
+- **工具**: `memory_search(query: str, limit: int)`
+- **逻辑**: 
+    1. 生成 `query` 的 Embedding。
+    2. 执行 `vec_distance_cosine` 搜索。
+    3. 返回匹配度最高的摘要文本。
 
 ---
-> 下一步：[飞书集成详细设计](../feishu-integration/DETAILED_DESIGN.md)
+> 关联需求: [REQ-CORE-002](../../requirements/core-agent/REQ-CORE-002.md)

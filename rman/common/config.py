@@ -11,6 +11,8 @@ class AgentConfig(BaseModel):
     tool_timeout: int = 30
     process_session_max_ttl: int = 3600
     audit_log_path: str = "./logs/audit.log"
+    audit_log_max_size: int = 10  # 单位 MB
+    audit_log_retention: int = 3   # 保留份数
     workspace_dir: str = "workspace"
     enable_intermediate_status: bool = True
 
@@ -20,8 +22,8 @@ class LLMConfig(BaseModel):
     api_key: str = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     model: str = "gpt-4o"
     temperature: float = 0.2
-    context_window: int = 128000
-    max_tokens: int = 4096
+    context_window: int = 200000
+    max_tokens: int = 32768
     timeout: int = 60
 
 class FeishuConfig(BaseModel):
@@ -43,11 +45,15 @@ class MemoryConfig(BaseModel):
     top_k: int = 3
     score_floor: float = 0.0
 
+class TavilyConfig(BaseModel):
+    api_key: str = Field(default_factory=lambda: os.getenv("TAVILY_API_KEY", ""))
+
 class Config(BaseModel):
     agent: AgentConfig = Field(default_factory=AgentConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    tavily: TavilyConfig = Field(default_factory=TavilyConfig)
 
 def load_config(config_path: str = "config/config.yaml") -> Config:
     if not os.path.exists(config_path):

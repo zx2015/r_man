@@ -114,8 +114,6 @@ class FeishuInteraction:
                 usage=usage
             )
             logger.info(f"Task finished for message {message_id}")
-
-
             
         except Exception as e:
             logger.exception(f"Agent execution failed: {e}")
@@ -127,81 +125,74 @@ class FeishuInteraction:
             )
 
     async def _send_card(self, chat_id: str, title: str, content_md: str, template: str = "blue", usage: dict = None):
-        """发送组件化交互式卡片消息"""
+        """发送智能增强的交互式卡片消息"""
         from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
+        from rman.common.card_utils import CardFormatter
         
-        elements = []
+        # 1. 自动 Header 颜色推断
+        # 映射规则：✅->green, ❌->red, ⚠️->orange, 其他/ℹ️->blue
+        inferred_template = template
+        if content_md.startswith("✅"): inferred_template = "green"
+        elif content_md.startswith("❌"): inferred_template = "red"
+        elif content_md.startswith("⚠️"): inferred_template = "orange"
         
-        # 1. 尝试解析 content_md。如果包含组件 JSON，则分离渲染
-        # 这是一个简单的实现：查找文本中是否包含类似 {"tag": "table" ...} 的块
+        # 2. 调用增强版渲染 Pipeline
+        # 该 Pipeline 会自动转换表格、注入间距、处理 Emoji
+        elements = CardFormatter.format_with_components(content_md)
+        
+        # 3. 注入 手动嵌入 JSON 组件的识别 (降级兼容)
+        # 此逻辑用于处理 Prompt 中推荐的极简组件，如 {"tag": "tag"}
+        final_elements = []
         import re
-        component_pattern = r'(\{[\s\n]*"tag"[\s\n]*:[\s\n]*"(table|column_set|div)"[\s\n]*,.*?\})'
-        matches = list(re.finditer(component_pattern, content_md, re.DOTALL))
-        
-        if matches:
-            last_pos = 0
-            for match in matches:
-                # 添加组件前的纯文本
-                text_before = content_md[last_pos:match.start()].strip()
-                if text_before:
-                    elements.append({"tag": "div", "text": {"tag": "lark_md", "content": text_before}})
-                
-                # 添加组件本身
-                try:
-                    comp_json = json.loads(match.group(1))
-                    elements.append(comp_json)
-                except Exception as e:
-                    logger.error(f"Failed to parse component JSON in content: {e}")
-                    elements.append({"tag": "div", "text": {"tag": "lark_md", "content": match.group(1)}})
-                
-                last_pos = match.end()
-            
-            # 添加剩余文本
-            text_after = content_md[last_pos:].strip()
-            if text_after:
-                elements.append({"tag": "div", "text": {"tag": "lark_md", "content": text_after}})
-        else:
-            # 无组件，纯 Markdown
-            elements.append({
-                "tag": "div",
-                "text": {"tag": "lark_md", "content": content_md}
-            })
-        
-        # 2. 如果提供了 usage，增加分栏展示
+        for elem in elements:
+            if elem.get("tag") == "div" and "lark_md" in elem.get("text", {}):
+                text = elem["text"]["lark_md"]["content"]
+                # 识别内联 JSON 组件
+                comp_pattern = r'(\{[\s\n]*"tag"[\s\n]*:[\s\n]*"(table|column_set|div|tag)"[\s\n]*,.*?\})'
+                matches = list(re.finditer(comp_pattern, text, re.DOTALL))
+                if matches:
+                    last_pos = 0
+                    for match in matches:
+                        if text[last_pos:match.start()].strip():
+                            final_elements.append({"tag": "div", "text": {"tag": "lark_md", "content": text[last_pos:match.start()].strip()}})
+                        try:
+                            final_elements.append(json.loads(match.group(1)))
+                        except: pass
+                        last_pos = match.end()
+                    if text[last_pos:].strip():
+                        final_elements.append({"tag": "div", "text": {"tag": "lark_md", "content": text[last_pos:].strip()}})
+                else:
+                    final_elements.append(elem)
+            else:
+                final_elements.append(elem)
+
+        # 4. 如果提供了 usage，增加分栏展示
         if usage:
-            elements.append({"tag": "hr"})
-            elements.append({
+            final_elements.append({"tag": "hr"})
+            final_elements.append({
                 "tag": "column_set",
                 "flex_mode": "stretch",
                 "columns": [
                     {
                         "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
+                        "width": "weighted", "weight": 1,
                         "elements": [
-                            {
-                                "tag": "div",
-                                "text": {"tag": "lark_md", "content": f"🏷 **Model**\n{usage.get('model', 'N/A')}"}
-                            }
+                            {"tag": "div", "text": {"tag": "lark_md", "content": f"🏷 **Model**\n{usage.get('model', 'N/A')}"}}
                         ]
                     },
                     {
                         "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
+                        "width": "weighted", "weight": 1,
                         "elements": [
-                            {
-                                "tag": "div",
-                                "text": {"tag": "lark_md", "content": f"📊 **Tokens**\nIn: {usage.get('input', 0)} / Out: {usage.get('output', 0)}"}
-                            }
+                            {"tag": "div", "text": {"tag": "lark_md", "content": f"📊 **Tokens**\nIn: {usage.get('input', 0)} / Out: {usage.get('output', 0)}"}}
                         ]
                     }
                 ]
             })
 
-        # 3. 注脚
+        # 5. 注脚
         curr_time = datetime.now().strftime('%H:%M:%S')
-        elements.append({
+        final_elements.append({
             "tag": "note",
             "elements": [{"tag": "plain_text", "content": f"⏱ {curr_time} | R-MAN Intelligence Service"}]
         })
@@ -209,9 +200,9 @@ class FeishuInteraction:
         card_json = {
             "header": {
                 "title": {"tag": "plain_text", "content": title},
-                "template": template
+                "template": inferred_template
             },
-            "elements": elements
+            "elements": final_elements
         }
 
         request = CreateMessageRequest.builder() \

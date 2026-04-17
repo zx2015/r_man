@@ -7,3 +7,5 @@ python-dotenv
 asyncio
 pytest
 pytest-asyncio
+sqlite-vec
+tavily-python

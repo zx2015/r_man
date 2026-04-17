@@ -1,7 +1,31 @@
+import json
+import functools
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Type
 from pydantic import BaseModel
 from loguru import logger
+
+def audit_log(func):
+    """审计日志装饰器"""
+    @functools.wraps(func)
+    async def wrapper(self, *args, **kwargs):
+        result = await func(self, *args, **kwargs)
+        
+        # 尝试从参数中提取“意图”
+        intent = kwargs.get("instruction") or kwargs.get("description") or "No intent declared"
+        
+        # 构造审计报文
+        audit_data = {
+            "tool": self.name,
+            "intent": intent,
+            "params": kwargs,
+            "status": "Success" if not str(result).startswith("Error") else "Fail"
+        }
+        
+        # 使用 bind(audit=True) 触发专门的日志 Sink
+        logger.bind(audit=True).info(json.dumps(audit_data, ensure_ascii=False))
+        return result
+    return wrapper
 
 class BaseTool(ABC):
     """所有 R-MAN 工具的基类"""

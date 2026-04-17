@@ -16,10 +16,9 @@ class AgentRunner:
 
     async def run(self, user_input: str, on_intermediate_status: Optional[Callable[[str], Coroutine[Any, Any, None]]] = None) -> Tuple[str, Dict[str, Any]]:
         """运行 ReAct 循环直到产生最终结果。返回 (答案, 元数据)"""
-        # 获取工具定义
+        # 1. 组装 System Prompt (不再自动注入历史背景)
         tool_descriptions = tool_registry.generate_tools_description()
         openai_tools = tool_registry.get_openai_tools()
-        
         system_prompt = prompt_builder.build(tool_descriptions=tool_descriptions)
         
         self.messages = [
@@ -34,6 +33,9 @@ class AgentRunner:
 
         for i in range(self.max_iterations):
             logger.debug(f"Iteration {i+1}/{self.max_iterations}")
+            
+            # --- 新增：上下文压缩检测 (80/60 准则) ---
+            await self._check_and_compress_context()
             
             # 1. 调用 LLM
             llm_message, usage = await llm_backend.chat(self.messages, tools=openai_tools if openai_tools else None)
@@ -147,6 +149,55 @@ class AgentRunner:
 
         final_ans = final_response if final_response else f"已达到最大迭代次数 ({self.max_iterations})。"
         return final_ans, total_usage
+
+    async def _check_and_compress_context(self):
+        """检测并执行上下文压缩 (80/60 准则)"""
+        # 估算总 Token (保守估算: 中文 2 字符/T, 英文 4 字符/T -> 综合取 3)
+        total_chars = sum(len(str(m.get("content", ""))) for m in self.messages)
+        # 考虑 tool_calls 的长度
+        for m in self.messages:
+            if "tool_calls" in m:
+                total_chars += len(str(m["tool_calls"]))
+        
+        estimated_tokens = total_chars // 2  # 极其保守的估算
+        
+        threshold = config.llm.context_window * 0.8
+        if estimated_tokens < threshold:
+            return
+
+        logger.warning(f"Context window pressure detected ({estimated_tokens} tokens). Starting 80/60 compression...")
+        
+        # 压缩逻辑：保留 System(0) 和 最近 5 条 (Tail)
+        if len(self.messages) <= 10: 
+            logger.info("Message count too small for compression. Skipping.")
+            return
+
+        system_msg = self.messages[0]
+        # 提取短期对话历史 (最近 5 轮消息)
+        preserved_msgs = self.messages[-5:]
+        # 提取中间的可压缩区域 (包含之前的摘要和中间步骤)
+        compressible_msgs = self.messages[1:-5]
+        
+        # 4. 调用 LLM 生成技术摘要 (上下文摘要)
+        summary_prompt = [
+            {"role": "system", "content": "你是一个上下文管理专家。请将以下历史对话过程总结为一段技术摘要。\n重点保留：已完成的任务目标、关键参数配置、重要的 Observation 数据。\n字数压缩率需达到 90% 以上。"},
+            {"role": "user", "content": f"请压缩以下消息序列：\n{json.dumps(compressible_msgs, ensure_ascii=False)}"}
+        ]
+        
+        try:
+            summary_msg, _ = await llm_backend.chat(summary_prompt)
+            new_summary_content = f"[Compacted Summary]\n{summary_msg.content}\n---"
+            
+            # 5. 重组消息序列
+            # 格式: [System] + [Compacted Summary] + [Short-term Messages]
+            self.messages = [
+                system_msg,
+                {"role": "user", "content": new_summary_content}
+            ] + preserved_msgs
+            
+            logger.info("Context compression completed successfully.")
+        except Exception as e:
+            logger.error(f"Context compression failed: {e}")
 
     def _parse_output(self, text: str) -> Tuple[Optional[str], Optional[str], List[Dict]]:
         """解析 LLM 输出，提取 think, final 和 文本模式的 actions"""

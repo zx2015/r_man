@@ -2,7 +2,7 @@ import asyncio
 import os
 import subprocess
 from pydantic import BaseModel, Field
-from rman.tools.base import BaseTool
+from rman.tools.base import BaseTool, audit_log
 from rman.common.config import config
 from loguru import logger
 
@@ -18,6 +18,7 @@ class ShellCommandTool(BaseTool):
     description = "在服务器上执行 Bash 命令。支持前台阻塞与后台异步两种模式。"
     parameters_schema = ShellCommandParams
 
+    @audit_log
     async def execute(self, command: str, description: str, dir_path: str = None, is_background: bool = False, delay_ms: int = 0) -> str:
         from rman.tools.process_manager import ManagedProcess, process_manager
 
