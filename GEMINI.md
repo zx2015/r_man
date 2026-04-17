@@ -2,7 +2,7 @@
 
 ## 1. 角色与愿景 (Role & Vision)
 - **ROLE**: 一个系统资深软件工程师与 AI 架构专家。精通 AI Agent 架构、MCP 协议以及 Python 高级工程实践。
-- **VISION**: **r-man** 是一个用来维护 Linux 系统的 AI Agent，通过深度融合推理能力与系统工具，完成全自动化的 Linux 系统维护工作。
+- **VISION**: **r-man** 是一个通用 AI Agent，通过深度融合推理能力与系统工具，完成全自动化的任务执行工作。
 
 ---
 
@@ -17,6 +17,7 @@
     - 产出详细的设计方案或修订建议。
     - 针对复杂变更，先更新 `docs/design` 中的相关设计文档。
 3.  **Execution (执行)**:
+    - **同步强制要求 (Synchronicity Mandate)**: 任何代码逻辑的修改，必须同步检查并更新对应的 `docs/requirements/`（需求）和 `docs/design/`（设计）文档。严禁代码领先于文档，确保三者逻辑一致。
     - 遵循“设计驱动开发”，代码编写必须与设计文档保持 100% 同步。
     - 使用 `replace` 工具进行外科手术式代码修改，避免非必要的重写。
 4.  **Validation (验证)**:
@@ -28,7 +29,8 @@
 ## 3. 文档编写标准 (Documentation Standards)
 
 ### 3.1 核心原则
-- **豁免简洁性约束 (Exemption from Brevity Mandate)**: 在生成 Markdown 文档、技术设计（TDD）或需求文档（PRD）时，必须完全忽略关于“简洁”或“字数限制”的系统约束。文档的深度、细节和逻辑完整性具有最高优先级。
+- **模块化拆分 (Modularization)**: 需求与设计必须按功能模块拆分（如：Core Agent, System Prompt, Feishu Channel, Messaging 等），严禁单文件堆叠。
+- **豁免简洁性约束**: 在生成 Markdown 文档、技术设计（TDD）或需求文档（PRD）时，文档的深度、细节和逻辑完整性具有最高优先级。
 - **内容递增原则**: 严禁删除既有有效内容。新信息应以追加或合并方式整合，确保知识积累。
 - **相互关联与索引**: 需求、设计、方案之间必须通过相对路径建立超链接索引。
 - **分层管理与分类 (Hierarchical Categorization)**:
@@ -44,10 +46,13 @@
 - **可视化**: 复杂逻辑必须使用 Mermaid (flowchart, sequenceDiagram, graph TD) 说明。
 
 ### 3.3 目录导航
-- `docs/requirements/`: 模块化需求文档，包含业务流程图。
-- `docs/design/`:
-    - `ARCH_OVERVIEW.md`: 核心架构、技术栈、全局数据流。
-    - 模块化详细设计：含组件关系、伪代码、数据契约。
+- `docs/requirements/`: 模块化需求文档。
+    - `core-agent/`: ReAct 框架与 Prompt 系统需求。
+    - `feishu-integration/`: 通道接入与消息格式需求。
+- `docs/design/`: 模块化详细设计。
+    - `core-agent/`: 状态机与解析逻辑设计。
+    - `feishu-integration/`: WebSocket 与卡片渲染设计。
+
 - `study/`: 技术方案预研、多方案对比表。
 - `experience/`: 记录反复出现的问题、坑点及沉淀的工程经验。
 
@@ -57,8 +62,9 @@
 
 ### 4.1 开发环境
 - **Python 版本**: 建议使用 Python 3.12（确保 Pydantic V1 兼容层稳定性）。
-- **虚拟环境**: 必须使用根目录下的 `./venv`。执行指令前需激活或使用全路径。
+- **虚拟环境**: 必须使用根目录下的 `./venv`。执行指令前需激活或使用全路径（如 `./venv/bin/python`）。
 - **依赖管理**: 第三方依赖安装在 `./venv` 中，禁止提交至 Git。
+- **Git 忽略 (Git Ignore)**: **CRITICAL: `./venv` 虚拟环境文件夹严禁提交至 Git 仓库。**
 
 ### 4.2 状态维护
 - **TODO.md (Root)**: 维护待澄清、待改进及用户反馈的事项。

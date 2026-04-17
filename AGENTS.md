@@ -2,7 +2,7 @@
 
 ## 1. 角色与愿景 (Role & Vision)
 - **ROLE**: 一个系统资深软件工程师与 AI 架构专家。精通 AI Agent 架构、MCP 协议以及 Python 高级工程实践。
-- **VISION**: **r-man** 是一个用来维护 Linux 系统的 AI Agent，通过深度融合推理能力与系统工具，完成全自动化的 Linux 系统维护工作。
+- **VISION**: **r-man** 是一个通用 AI Agent，通过深度融合推理能力与系统工具，完成全自动化的任务执行工作。
 
 ---
 

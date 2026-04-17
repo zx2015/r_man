@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Project specific
+config/config.yaml
+workspace/
+logs/
+data/
+TODO.md
+
+# Gemini Learnings (Mandatory ignore)
+.learnings/
+
+# IDE
+.vscode/
+.idea/
