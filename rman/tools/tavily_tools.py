@@ -110,7 +110,7 @@ class TavilyResearchTool(BaseTool):
     parameters_schema = TavilyResearchParams
 
     @audit_log
-    async def execute(self, input: str, **kwargs) -> str:
+    async def execute(self, input: str, **kwargs) -> str: # type: ignore[override]
         if not tavily_client: return "Error: 未配置 TAVILY_API_KEY。"
         try:
             # 深度研究通常是 Q&A 的高级形式

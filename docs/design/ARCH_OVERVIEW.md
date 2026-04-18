@@ -1,130 +1,66 @@
-# ARCH_OVERVIEW: r-man 整体架构设计
+# ARCH_OVERVIEW: r-man 核心架构总览
 
 | 版本号 | 日期 | 变更说明 | 作者 |
 | :--- | :--- | :--- | :--- |
-| v1.0.0 | 2026-04-16 | 初始版本，定义分层架构与全局数据流 | Gemini CLI |
+| v2.0.0 | 2026-04-17 | 全量同步最新实现，定义四层逻辑分层 | Gemini CLI |
 
-## 1. 系统愿景
-
-**r-man** 旨在通过一套标准化的“思考-行动”循环，将碎片化的系统工具与强大的 LLM 推理能力粘合，为用户提供一个安全、可靠且可定制的自动化执行环境。
+## 1. 设计愿景
+**r-man** 旨在通过一套标准化的“思考-行动-观察”循环（ReAct），将碎片化的系统工具（Shell、文件、进程）与强大的大语言模型（LLM）推理能力深度粘合，构建一个安全、可审计、具备长期记忆的自动化执行环境。
 
 ## 2. 逻辑架构 (Layered Architecture)
 
-系统分为四层，自上而下分别为：
+系统采用严谨的四层分层模型，各层之间通过标准数据契约（Pydantic）通信：
 
 ```mermaid
 graph TD
     subgraph Interaction_Layer [交互层 - Interaction]
         A[Feishu WebSocket Client]
-        B[Serial Task Queue]
+        B[Serial FIFO Task Queue]
+        C[Interactive Card Renderer]
     end
 
     subgraph Reasoning_Layer [推理层 - Reasoning]
-        C[ReAct Engine]
-        D[Dynamic Prompt Builder]
-        E[Context Compressor]
+        D[ReAct Runner]
+        E[Dynamic Prompt Builder]
+        F[Context Compressor 80/60]
     end
 
     subgraph Capability_Layer [能力层 - Capability]
-        F[Tool Registry]
-        G[Built-in Tools: File/Shell/Memory]
-        H[Third-party Plugins]
+        G[Tool Registry]
+        H[Built-in Tools: File/Shell/Process]
+        I[External Plugins: Tavily/Memory]
+        J[Audit Logging Decorator]
     end
 
     subgraph Storage_Layer [存储层 - Storage]
-        I[SQLite Vector DB]
-        J[Audit Logs]
+        K[SQLite + sqlite-vec DB]
+        L[Local Audit Log Files]
     end
 
-    A <--> B
-    B <--> C
-    C --> D
-    C --> F
-    F --> G
-    F --> H
-    C <--> E
-    C <--> I
-    F --> J
+    Interaction_Layer <--> Reasoning_Layer
+    Reasoning_Layer <--> Capability_Layer
+    Capability_Layer <--> Storage_Layer
 ```
 
 ### 2.1 交互层 (Interaction)
-负责与飞书平台保持 WebSocket 长连接，接收用户消息。它包含一个**串行 FIFO 队列**，确保单一用户发起的任务在执行上是互斥且保序的，防止并发 shell 操作冲突。
+维护与飞书的长连接。包含 **串行 FIFO 队列**，确保针对单用户的文件/Shell 操作是互斥且保序的。负责将 Markdown 自动升级为 UI 卡片组件。
 
 ### 2.2 推理层 (Reasoning)
-系统的核心大脑。实现 ReAct 循环（Think → Act → Observe），并负责从 `RMAN.md` 和 `TOOLS.md` 中动态组装 System Prompt。在 Token 接近限制时，执行背景摘要压缩。
+系统的“大脑”。实现标签化解析（`<think>`/`<final>`）。监控 Token 压力，在达到 80% 阈值时自动触发摘要压缩（60% 目标）。
 
 ### 2.3 能力层 (Capability)
-Agent 可调用的“手脚”。所有工具均需在 `ToolRegistry` 注册。它实现了工具定义的强契约，并负责在执行前记录审计日志，在执行后封装错误信息。
+系统的“手脚”。所有操作必须经过 **`@audit_log` 装饰器** 记录意图。具备严格的路径校验，支持 `/tmp` 和 `workspace/` 路径放宽。
 
 ### 2.4 存储层 (Storage)
-负责持久化。包含用于 Memory 功能的 SQLite 向量数据库，以及用于安全追溯的本地审计日志文件。
+系统的“持久化根基”。存储 90 天有效期的向量化记忆，以及不可篡改的本地审计链。
 
-## 3. 核心全局数据流
+## 3. 技术栈总结
 
-### 3.1 任务处理序列
-
-```mermaid
-sequenceDiagram
-    participant U as 用户 (飞书)
-    participant I as Interaction (Feishu)
-    participant R as Reasoning (Agent)
-    participant C as Capability (Tools)
-    participant S as Storage (Memory)
-
-    U->>I: 下达指令
-    I->>I: 入队 (Serial Queue)
-    I->>I: 发送"处理中..."反馈
-    I->>R: 启动 ReAct 引擎
-
-    loop Reasoning Loop
-        R->>R: 组装 Prompt (RMAN + TOOLS)
-        R->>R: LLM 推理 (Thought + Action)
-        alt 是 Action
-            R->>C: 调用工具
-            C->>C: 记录审计日志
-            C-->>R: 返回 Observation
-        else 是 Memory 操作
-            R->>S: 读写向量数据
-            S-->>R: 返回历史上下文
-        end
-    end
-
-    R-->>I: Final Answer
-    I-->>U: 回复最终执行报告
-```
-
-## 4. 物理目录结构 (Project Layout)
-
-```text
-r-man/
-├── config/                 # 配置文件 (config.yaml)
-├── data/                   # 持久化数据 (SQLite, 审计日志)
-├── docs/                   # 需求与设计文档
-├── rman/                   # 源代码根目录
-│   ├── __init__.py
-│   ├── main.py             # 入口程序
-│   ├── agent/              # 推理层：ReAct 引擎、Prompt 构建
-│   ├── tools/              # 能力层：工具基类与内置工具实现
-│   ├── storage/            # 存储层：SQLite 封装、向量操作
-│   ├── interaction/        # 交互层：飞书 WebSocket、队列管理
-│   └── common/             # 通用：配置解析、日志、数据模型
-├── tests/                  # 测试用例
-├── RMAN.md                 # 用户可编辑：角色与约束
-├── TOOLS.md                 # 系统自动生成：工具说明
-├── requirements.txt        # 依赖清单
-└── venv/                   # 虚拟环境 (被忽略)
-```
-
-## 5. 核心技术栈
-
-| 组件 | 选型 | 理由 |
-| :--- | :--- | :--- |
-| **语言** | Python 3.12 | 工业级异步支持与成熟的 AI 生态 |
-| **SDK** | `lark-oapi` | 飞书官方 SDK，支持 WebSocket 自动重连与 Token 管理 |
-| **模型协议** | OpenAI Compatible | 兼容 GPT-4o 及各类私有化推理后端 |
-| **存储** | SQLite + `sqlite-vec` | 轻量化、零运维，原生支持向量检索 |
-| **数据建模** | Pydantic V1 | 强类型契约保障，与主流 SDK 兼容性好 |
-| **日志** | `loguru` | 结构化日志，配置简单 |
+- **核心语言**: Python 3.12+
+- **交互引擎**: `lark-oapi` (WebSocket 模式)
+- **推理后端**: OpenAI Compatible API (支持 Native Tool Calling)
+- **存储引擎**: SQLite 3 + `sqlite-vec` 扩展
+- **日志审计**: `loguru` (带异步队列与轮转)
 
 ---
-> 下一步：[核心推理层详细设计](core-agent/DETAILED_DESIGN.md)
+> 下一步：[核心推理层设计](core-agent/DETAILED_DESIGN.md)

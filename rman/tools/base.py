@@ -27,11 +27,13 @@ def audit_log(func):
         return result
     return wrapper
 
+from typing import Dict, Any, Type, Optional
+
 class BaseTool(ABC):
     """所有 R-MAN 工具的基类"""
     name: str = ""
     description: str = ""
-    parameters_schema: Type[BaseModel] = None
+    parameters_schema: Optional[Type[BaseModel]] = None
 
     @abstractmethod
     async def execute(self, **kwargs) -> str:

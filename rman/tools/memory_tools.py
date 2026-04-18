@@ -14,7 +14,7 @@ class MemorySearchTool(BaseTool):
     description = "搜索长期记忆，寻找与当前任务相关的历史背景、执行结果或用户偏好。"
     parameters_schema = MemorySearchParams
 
-    async def execute(self, query: str, limit: int = 3) -> str:
+    async def execute(self, query: str, limit: int = 3) -> str: # type: ignore[override]
         # 1. 对查询内容进行向量化
         vec = await memory_summarizer.embed(query)
         if not vec:
@@ -45,7 +45,7 @@ class MemoryDumpTool(BaseTool):
     description = "将当前学到的重要知识、用户偏好或任务总结存入长期记忆。"
     parameters_schema = MemoryDumpParams
 
-    async def execute(self, summary: str, tag: str = "general", ttl_days: int = 90) -> str:
+    async def execute(self, summary: str, tag: str = "general", ttl_days: int = 90) -> str: # type: ignore[override]
         # 1. 对摘要进行向量化
         vec = await memory_summarizer.embed(summary)
         if not vec:

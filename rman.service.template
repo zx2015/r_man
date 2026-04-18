@@ -1,0 +1,23 @@
+[Unit]
+Description=R-MAN: Universal AI Agent Service
+After=network.target
+
+[Service]
+# 请根据实际安装路径修改以下 WorkingDirectory
+WorkingDirectory=/path/to/r_man
+Environment=PYTHONPATH=.
+Environment=PYTHONUNBUFFERED=1
+
+# 执行路径请指向项目本地 venv 中的 python
+ExecStart=/path/to/r_man/venv/bin/python rman/main.py
+
+# 自动重启策略：如果程序由于异常退出，系统会在 5 秒后尝试拉起
+Restart=always
+RestartSec=5
+
+# 日志重定向
+StandardOutput=append:/path/to/r_man/logs/stdout.log
+StandardError=append:/path/to/r_man/logs/stderr.log
+
+[Install]
+WantedBy=multi-user.target

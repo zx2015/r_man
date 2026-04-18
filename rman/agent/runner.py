@@ -109,6 +109,10 @@ class AgentRunner:
                     params = action.get("parameters", {})
                     call_id = action.get("call_id")
                     
+                    if not tool_name or not isinstance(tool_name, str):
+                        logger.error(f"Invalid tool name in action: {tool_name}")
+                        continue
+
                     logger.info(f"Executing {'Native' if call_id else 'Text'} Action: {tool_name}")
                     
                     tool = tool_registry.get_tool(tool_name)

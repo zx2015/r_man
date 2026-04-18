@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from openai import AsyncOpenAI
 from rman.common.config import config
 from loguru import logger

@@ -1,5 +1,6 @@
 import asyncio
 import json
+from typing import Optional
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import P2ImMessageReceiveV1, CreateMessageRequest, CreateMessageRequestBody
 from rman.common.config import config
@@ -124,7 +125,7 @@ class FeishuInteraction:
                 template="red"
             )
 
-    async def _send_card(self, chat_id: str, title: str, content_md: str, template: str = "blue", usage: dict = None):
+    async def _send_card(self, chat_id: str, title: str, content_md: str, template: str = "blue", usage: Optional[dict] = None):
         """发送智能增强的交互式卡片消息"""
         from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
         from rman.common.card_utils import CardFormatter

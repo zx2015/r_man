@@ -21,7 +21,7 @@ class ProcessTool(BaseTool):
     description = "管理由 run_shell_command(is_background=True) 启动的后台进程。"
     parameters_schema = ProcessParams
 
-    async def execute(self, action: ProcessAction, pid: int, offset: int = 0, limit: int = 50) -> str:
+    async def execute(self, action: ProcessAction, pid: int, offset: int = 0, limit: int = 50) -> str: # type: ignore[override]
         m_proc = process_manager.get_process(pid)
         
         if not m_proc:

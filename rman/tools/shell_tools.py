@@ -1,6 +1,7 @@
 import asyncio
 import os
 import subprocess
+from typing import Optional
 from pydantic import BaseModel, Field
 from rman.tools.base import BaseTool, audit_log
 from rman.common.config import config
@@ -19,7 +20,7 @@ class ShellCommandTool(BaseTool):
     parameters_schema = ShellCommandParams
 
     @audit_log
-    async def execute(self, command: str, description: str, dir_path: str = None, is_background: bool = False, delay_ms: int = 0) -> str:
+    async def execute(self, command: str, description: str, dir_path: Optional[str] = None, is_background: bool = False, delay_ms: int = 0) -> str: # type: ignore[override]
         from rman.tools.process_manager import ManagedProcess, process_manager
 
         # 1. 确定工作目录
