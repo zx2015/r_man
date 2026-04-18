@@ -11,7 +11,7 @@ from rman.common.config import config
 os.makedirs("logs", exist_ok=True)
 logger.remove()
 logger.add(sys.stderr, level="DEBUG")
-logger.add("logs/rman.log", rotation="10 MB", level="DEBUG", enqueue=True)
+logger.add("logs/rman.log", rotation="10 MB", retention=3, level="DEBUG", enqueue=True)
 
 # 审计日志处理器
 logger.add(

@@ -127,7 +127,20 @@ class FeishuInteraction:
         
         try:
             runner = AgentRunner(session_id=message_id)
-            final_answer, usage = await runner.run(text)
+            
+            # --- 恢复：中间状态回调逻辑 ---
+            async def intermediate_callback(content: str):
+                if config.agent.enable_intermediate_status:
+                    await self._send_card(
+                        chat_id, 
+                        "⚙️ R-MAN 执行中...", 
+                        content, 
+                        template="turquoise" 
+                    )
+            
+            # 运行 Agent 并传入回调
+            final_answer, usage = await runner.run(text, on_intermediate_status=intermediate_callback)
+            # ----------------------------
             
             # 发送结果卡片
             await self._send_card(

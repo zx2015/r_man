@@ -18,10 +18,6 @@ ExecStart={python_path} rman/main.py
 Restart=always
 RestartSec=5
 
-# 日志重定向
-StandardOutput=append:{work_dir}/logs/stdout.log
-StandardError=append:{work_dir}/logs/stderr.log
-
 [Install]
 WantedBy=multi-user.target
 """

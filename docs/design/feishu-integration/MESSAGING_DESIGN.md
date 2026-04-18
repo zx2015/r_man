@@ -63,8 +63,9 @@ total_usage = {
 ### 3.1 处理阶段
 1.  **Table Budgeting (预算阶段)**:
     - 统计不在代码块内的 `|---|` 表格。
-    - 超过阈值 (3) 的表格被自动包裹在 ` ``` ` 中。
-2.  **Markdown Optimization (样式阶段)**:
+    - 超过阈值 (`config.feishu.card_table_limit`) 的表格被自动降级为 ` ``` `。
+    - 单个表格列数若超过 `config.feishu.card_column_limit`，执行硬截断。
+    - `page_size` 默认为 **10**。
     - **List Spacer**: `processed = re.sub(r'([^\n])\n([-*] |\d+\. )', r'\1\n\n\2', processed)`。
     - **Bold Tightener**: `processed = re.sub(r'\*\*\s+(.*?)\s+\*\*', r'**\1**', processed)`。
     - **Blockquote Shim**: 将 `> ` 替换为 `▎ `。
@@ -87,9 +88,19 @@ total_usage = {
     - 检查文本前 5 个字符。
     - 映射：`{"✅": "green", "❌": "red", "⚠️": "orange", "ℹ️": "blue"}`。
 
-## 4. 实现考量
-- **异步安全性**: 使用 `run_in_executor` 调用 `im.message.create` 以防止阻塞 IO。
-- **错误处理**: 若 `usage` 字段缺失（某些 Provider 不返回），注脚将显示 `N/A`，不应导致程序崩溃。
+## 4. 日志管理与轮转方案 (Logging Strategy)
+
+系统弃用原始的 systemd 文件重定向，改由 Loguru 全面接管日志生命周期：
+
+### 4.1 日志分类
+| 文件 | 级别 | 轮转策略 | 保留策略 |
+| :--- | :--- | :--- | :--- |
+| `logs/rman.log` | DEBUG | 10 MB | 3 份 |
+| `logs/audit.log` | INFO | 10 MB | 3 份 |
+
+### 4.2 导出逻辑
+- 所有日志同时输出到 `sys.stderr`，由 `journald` 捕获以支持 `journalctl` 查询。
+- 使用 `enqueue=True` 确保在大并发或网络阻塞时的线程安全性。
 
 ---
 > 关联需求: [REQ-MESSAGING-001](../../requirements/feishu-integration/REQ-MESSAGING-001.md)

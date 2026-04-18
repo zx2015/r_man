@@ -15,9 +15,5 @@ ExecStart=/path/to/r_man/venv/bin/python rman/main.py
 Restart=always
 RestartSec=5
 
-# 日志重定向
-StandardOutput=append:/path/to/r_man/logs/stdout.log
-StandardError=append:/path/to/r_man/logs/stderr.log
-
 [Install]
 WantedBy=multi-user.target
