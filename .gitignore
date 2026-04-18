@@ -8,6 +8,7 @@ venv/
 # Project specific
 config/config.yaml
 workspace/
+rman.service
 logs/
 logs/audit.log
 data/

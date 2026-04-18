@@ -60,7 +60,17 @@ R-MAN 可以通过 `tavily_search` 访问实时互联网，您可以问它关于
 *   **安全审计**: `logs/audit.log` (记录所有敏感操作意图)
 
 ### 4.2 后台常驻 (systemd)
-参考 `rman.service.template` 配置系统服务，实现故障自愈与开机自启。
+`setup.sh` 会根据您的实际路径自动生成 `rman.service`。部署步骤如下：
+1.  将生成的文件拷贝到系统服务目录：
+    ```bash
+    sudo cp rman.service /etc/systemd/system/
+    ```
+2.  启动并设置开机自启：
+    ```bash
+    sudo systemctl daemon-reload
+    sudo systemctl enable rman
+    sudo systemctl start rman
+    ```
 
 ---
 > 🤖 **R-MAN**: 推理先于执行，安全重于一切。

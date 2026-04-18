@@ -129,7 +129,11 @@ EOF
 ./venv/bin/python3 gen_config.py
 rm gen_config.py
 
-# 8. 权限加固
+# 8. 生成 systemd 服务配置
+echo -e "\n⚙️ 正在生成 systemd 服务配置..."
+./venv/bin/python rman/common/gen_service.py
+
+# 9. 权限加固
 chmod 700 data logs
 echo -e "\n🎉 R-MAN 初始化完成！"
 echo "----------------------------------------"
