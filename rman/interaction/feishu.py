@@ -1,8 +1,13 @@
 import asyncio
 import json
-from typing import Optional
+from typing import Optional, List, Dict
 import lark_oapi as lark
-from lark_oapi.api.im.v1 import P2ImMessageReceiveV1, CreateMessageRequest, CreateMessageRequestBody
+from lark_oapi.api.im.v1 import (
+    P2ImMessageReceiveV1, 
+    CreateMessageRequest, 
+    CreateMessageRequestBody,
+    ListChatRequest
+)
 from rman.common.config import config
 from rman.interaction.queue import task_queue
 from loguru import logger
@@ -14,12 +19,13 @@ class FeishuInteraction:
         self.app_secret = config.feishu.app_secret
         self.allowed_user = config.feishu.allowed_user_open_id
         self.loop = None
+        self.last_active_time = datetime.now()
         
         # 初始化 API Client
         self.client = lark.Client.builder() \
             .app_id(self.app_id) \
             .app_secret(self.app_secret) \
-            .log_level(lark.LogLevel.INFO) \
+            .log_level(lark.LogLevel.DEBUG) \
             .build()
             
         # 注册事件分发器
@@ -33,8 +39,11 @@ class FeishuInteraction:
             self.app_id, 
             self.app_secret, 
             event_handler=self.event_handler,
-            log_level=lark.LogLevel.INFO
+            log_level=lark.LogLevel.DEBUG
         )
+        # 挂载内部回调以追踪连接状态
+        self.ws_client._on_connected = self._on_ws_connected  # type: ignore
+        self.ws_client._on_disconnected = self._on_ws_disconnected  # type: ignore
 
     async def start(self):
         logger.info("Starting Feishu WebSocket client and task queue...")
@@ -46,17 +55,43 @@ class FeishuInteraction:
         self._ws_thread = threading.Thread(target=self.ws_client.start, daemon=True)
         self._ws_thread.start()
 
+    def _on_ws_connected(self):
+        """连接成功回调"""
+        logger.success("🚀 Feishu WebSocket Connected Successfully!")
+        self.last_active_time = datetime.now()
+
+    def _on_ws_disconnected(self):
+        """连接断开回调"""
+        logger.error("⚠️ Feishu WebSocket Disconnected! SDK will auto-reconnect...")
+
+    async def check_connection(self) -> bool:
+        """主动探活：调用极简 API 验证连通性"""
+        try:
+            from datetime import timedelta
+            if datetime.now() - self.last_active_time < timedelta(minutes=1):
+                return True
+                
+            req = ListChatRequest.builder().build()
+            response = await self.loop.run_in_executor(None, self.client.im.v1.chat.list, req)
+            
+            if response.success():
+                self.last_active_time = datetime.now()
+                logger.info("Connection heartbeat: ACTIVE") 
+                return True
+            else:
+                logger.warning(f"Active connection check: FAILED ({response.msg})")
+        except Exception as e:
+            logger.error(f"Active heartbeat error: {e}")
+        return False
+
     def stop(self):
         """停止飞书交互服务相关资源"""
-        # WSClient 在守护线程运行且无 stop 方法，无需手动调用
         logger.info("Closing Feishu Interaction service...")
-
-        # 任务队列的停止是异步的
         if self.loop and self.loop.is_running():
             self.loop.create_task(task_queue.stop())
 
-
     def _on_message_received(self, data: P2ImMessageReceiveV1) -> None:
+        self.last_active_time = datetime.now() # 更新活跃时间
         message = data.event.message
         sender_id = data.event.sender.sender_id.open_id
         chat_id = message.chat_id
@@ -89,23 +124,11 @@ class FeishuInteraction:
         """调用真实的 AgentRunner 进行推理处理"""
         from rman.agent.runner import AgentRunner
         logger.info(f"Task started for message {message_id}: {text}")
-
+        
         try:
             runner = AgentRunner(session_id=message_id)
-
-            # 定义回调逻辑
-            async def intermediate_callback(content: str):
-                if config.agent.enable_intermediate_status:
-                    await self._send_card(
-                        chat_id, 
-                        "⚙️ R-MAN 执行中...", 
-                        content, 
-                        template="turquoise" # 使用青色区分中间过程
-                    )
-
-            # 运行 Agent 并传入回调
-            final_answer, usage = await runner.run(text, on_intermediate_status=intermediate_callback)
-
+            final_answer, usage = await runner.run(text)
+            
             # 发送结果卡片
             await self._send_card(
                 chat_id, 
@@ -131,24 +154,20 @@ class FeishuInteraction:
         from rman.common.card_utils import CardFormatter
         
         # 1. 自动 Header 颜色推断
-        # 映射规则：✅->green, ❌->red, ⚠️->orange, 其他/ℹ️->blue
         inferred_template = template
         if content_md.startswith("✅"): inferred_template = "green"
         elif content_md.startswith("❌"): inferred_template = "red"
         elif content_md.startswith("⚠️"): inferred_template = "orange"
         
         # 2. 调用增强版渲染 Pipeline
-        # 该 Pipeline 会自动转换表格、注入间距、处理 Emoji
         elements = CardFormatter.format_with_components(content_md)
         
-        # 3. 注入 手动嵌入 JSON 组件的识别 (降级兼容)
-        # 此逻辑用于处理 Prompt 中推荐的极简组件，如 {"tag": "tag"}
+        # 3. 注入 手动嵌入 JSON 组件的识别
         final_elements = []
         import re
         for elem in elements:
             if elem.get("tag") == "div" and "lark_md" in elem.get("text", {}):
                 text = elem["text"]["lark_md"]["content"]
-                # 识别内联 JSON 组件
                 comp_pattern = r'(\{[\s\n]*"tag"[\s\n]*:[\s\n]*"(table|column_set|div|tag)"[\s\n]*,.*?\})'
                 matches = list(re.finditer(comp_pattern, text, re.DOTALL))
                 if matches:
@@ -215,9 +234,22 @@ class FeishuInteraction:
                 .build()) \
             .build()
             
-        response = await self.loop.run_in_executor(None, self.client.im.v1.message.create, request)
-        if not response.success():
-            logger.error(f"Failed to send card: {response.code}, {response.msg}")
+        # 5. 执行发送（带重试机制）
+        for attempt in range(3):
+            try:
+                response = await self.loop.run_in_executor(None, self.client.im.v1.message.create, request)
+                if response.success():
+                    logger.debug(f"Card sent successfully (Attempt {attempt+1})")
+                    return
+                else:
+                    logger.error(f"Failed to send card (Attempt {attempt+1}): {response.code}, {response.msg}")
+            except Exception as e:
+                logger.error(f"Network error sending card (Attempt {attempt+1}): {e}")
+            
+            if attempt < 2:
+                await asyncio.sleep(2)
+
+        logger.critical(f"Failed to send card after all attempts.")
 
 # 单例
 feishu_handler = FeishuInteraction()

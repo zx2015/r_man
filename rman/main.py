@@ -50,19 +50,34 @@ async def main():
 
     # --- 新增：独立的后台维护任务 ---
     async def maintenance_task():
-        """每 24 小时执行一次内存维护"""
+        """每 24 小时执行一次内存维护，并每 5 分钟执行一次连接看门狗检查"""
         logger.info("Background maintenance task started.")
+        counter_24h = 0
         while not stop_event.is_set():
             try:
-                # 每 24 小时检查一次
-                await asyncio.sleep(3600 * 24)
-                if not stop_event.is_set():
+                await asyncio.sleep(60) # 改为每 1 分钟检查一次
+                
+                # 1. 主动探活
+                await feishu_handler.check_connection()
+                
+                # 2. 看门狗检查 (自愈重启逻辑)
+                from datetime import datetime
+                idle_seconds = (datetime.now() - feishu_handler.last_active_time).total_seconds()
+                if idle_seconds > 300: # 5 分钟无活跃信号则重启 (匹配 SDK 30s 心跳规律)
+                    logger.error(f"WebSocket Watchdog: Connection dead or token expired (idle for {idle_seconds}s). Suiciding for restart...")
+                    os.kill(os.getpid(), signal.SIGTERM)
+                
+                # 2. 内存清理计时 (计数单位也需同步修改)
+                counter_24h += 1
+                if counter_24h >= 1440: # 1440 分钟 = 24 小时
                     from rman.storage.memory import memory_store
                     import sqlite3
                     logger.info("Executing scheduled memory cleanup...")
                     conn = sqlite3.connect(config.memory.db_path)
                     memory_store._cleanup_expired(conn)
                     conn.close()
+                    counter_24h = 0
+                    
             except asyncio.CancelledError:
                 break
             except Exception as e:
