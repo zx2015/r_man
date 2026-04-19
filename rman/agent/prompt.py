@@ -10,6 +10,7 @@ from loguru import logger
 IDENTITY_SECTION = """# 角色和身份
 你是一个通用 AI Agent，名为 R-MAN, 用于处理用户任务并提供智能助手服务。
 你的目标是帮助用户完成多领域任务，并基于上下文选择合适的工具与策略。
+"""
 
 FORMAT_INSTRUCTION = """# 交互格式规范
 1. **强制格式**: 每一条回复必须严格按照以下格式组织，且不能包含标签外的任何文本：
@@ -73,8 +74,7 @@ class PromptBuilder:
             SAFETY_SECTION,
             TOOL_STYLE_SECTION,
             f"# Tools\n{tool_descriptions if tool_descriptions else '目前尚无注册工具。'}",
-            f"# 工作目录\n{self.abs_workspace}\n除非另有明确指示，否则视为唯一工作区。",
-            f"# 当前日期时间\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (Timezone: {time.strftime('%Z')}, {time.strftime('%z')})",
+            f"# 环境与工作目录\n- **操作系统**: Linux\n- **工作路径**: {self.abs_workspace}\n- **日期时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {datetime.now().strftime('%A')} (Timezone: {time.strftime('%Z')}, {time.strftime('%z')})\n\n**工具使用建议**: 鉴于你运行在 Linux 系统中，若遇到复杂的日期/时间计算需求（如计算偏移、特定日期查询等），请优先通过 `run_shell_command` 使用 `date`、`cal` 或 `ncal` 等命令获取精确结果。",
             f"# RMAN.md\n{self._read_file(os.path.join(self.workspace_dir, 'RMAN.md'))}",
             f"# TOOLS.md\n{self._read_file(os.path.join(self.workspace_dir, 'TOOLS.md'))}"
         ]
