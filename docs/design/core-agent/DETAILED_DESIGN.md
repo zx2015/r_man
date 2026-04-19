@@ -96,6 +96,33 @@ Agent 的 `run` 方法是一个同步/异步阻塞过程，核心逻辑如下：
 > 重点保留：已完成的任务目标、关键参数配置、重要的 Observation 数据。
 > 形式：使用时间轴或步骤列表，字数压缩率需达到 90% 以上。”
 
+## 5. 上下文窗口管理 (Context Window Management)
+
+Agent 采用五层结构来维护 Context Window，平衡“长短期记忆”与“细节精度”：
+
+1.  **系统层 (System Layer)**:
+    - 动态生成，包含 System Prompt 和当前环境可用的工具定义。
+2.  **历史摘要 (Summary Layer)**:
+    - 仅在触发 **80/60 自动压缩**（即 Token 达到窗口 80%）后出现。
+    - LLM 将过往较早的对话和 ReAct 步骤总结为 `[Compacted Summary]`。
+3.  **近期消息 (Recent Message Layer)**:
+    - 包含未被压缩的 `User` 原始提问和 `Assistant` 的思考/回复。
+4.  **工具调用记录 (Tool Call Layer)**:
+    - 包含 Agent 发出的具体工具指令（`tool_calls` 或 `Action: {}`）。
+5.  **工具观察结果 (Observation Layer)**:
+    - 包含工具执行的原始 `Observation` 输出。
+    - 受 **40k 溢出保护**（Observation Distillation）约束，超限部分会被截断并进行局部摘要。
+
+### 5.4 自动窗口压缩 (80/60 准则)
+当估算 Token 达到 80% 阈值时：
+- 保留系统层和最近的 5 条消息。
+- 将中间所有消息（包含历史摘要和 ReAct 步骤）进行技术性压缩，生成新的摘要。
+- 压缩后的 Context 占用降至约 60%。
+
+### 5.5 会话持久化与恢复
+- **存储内容**: 持久化存储实时记录完整的消息流。
+- **恢复逻辑**: 重启会话时，系统按序回填最近的消息。如果历史中存在 `[Compacted Summary]`，它将作为历史背景自然存在于上下文的早期部分，后续则是原始的工具执行细节。不再生成额外的全任务汇总摘要。
+
 ## 6. 工具注册与执行契约
 
 所有工具必须继承 `BaseTool` 基类，并定义 Pydantic 参数模型。

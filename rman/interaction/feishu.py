@@ -123,38 +123,30 @@ class FeishuInteraction:
     async def _process_agent_task(self, message_id: str, text: str, chat_id: str):
         """调用真实的 AgentRunner 进行推理处理"""
         from rman.agent.runner import AgentRunner
+        from rman.storage.session import session_store
+        from rman.agent.summarizer import memory_summarizer
+
         logger.info(f"Task started for message {message_id}: {text}")
         
         try:
-            runner = AgentRunner(session_id=message_id)
+            # 传入 chat_id 以加载历史
+            runner = AgentRunner(session_id=message_id, chat_id=chat_id)
             
-            # --- 恢复：中间状态回调逻辑 ---
+            # 定义回调逻辑
             async def intermediate_callback(content: str):
                 if config.agent.enable_intermediate_status:
-                    await self._send_card(
-                        chat_id, 
-                        "⚙️ R-MAN 执行中...", 
-                        content, 
-                        template="turquoise" 
-                    )
+                    await self._send_card(chat_id, "⚙️ R-MAN 执行中...", content, template="turquoise")
             
-            # 运行 Agent 并传入回调
+            # 运行 Agent
             final_answer, usage = await runner.run(text, on_intermediate_status=intermediate_callback)
-            # ----------------------------
             
             # 发送结果卡片
-            await self._send_card(
-                chat_id, 
-                "🤖 R-MAN 执行报告", 
-                final_answer, 
-                template="green",
-                usage=usage
-            )
+            await self._send_card(chat_id, "🤖 R-MAN 执行报告", final_answer, template="green", usage=usage)
             logger.info(f"Task finished for message {message_id}")
             
         except Exception as e:
             logger.exception(f"Agent execution failed: {e}")
-            await self._send_card(
+            await self._send_card(chat_id, "❌ 系统错误", str(e), template="red")
                 chat_id, 
                 "❌ R-MAN 执行出错", 
                 f"处理指令时发生了错误:\n```text\n{str(e)}\n```", 

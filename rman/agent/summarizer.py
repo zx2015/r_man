@@ -52,5 +52,33 @@ class MemorySummarizer:
             logger.error(f"Embedding failed: {e}")
             return []
 
+    async def summarize_observation(self, tool_name: str, raw_output: str) -> str:
+        """对巨大的工具输出执行智能预蒸馏 (头尾采样)"""
+        # 采用头尾各 5k 采样，捕捉表头和末尾可能的结论/报错
+        sample = raw_output[:5000] + "\n...[Content Omitted]...\n" + raw_output[-5000:]
+        prompt = [
+            {"role": "system", "content": "你是一个系统数据分析专家。以下是一个工具执行产生的海量原始输出采样。请总结其中包含的关键信息、规律或错误模式。字数控制在 300 字以内。"},
+            {"role": "user", "content": f"工具: {tool_name}\n原始输出采样: \n{sample}"}
+        ]
+        try:
+            msg, _ = await llm_backend.chat(prompt)
+            return msg.content.strip()
+        except Exception as e:
+            logger.error(f"Observation distillation failed: {e}")
+            return "[Error during distillation]"
+
+    async def summarize_react_trace(self, trace_content: str) -> str:
+        """将 ReAct 任务执行路径浓缩为持久化技术纪要"""
+        prompt = [
+            {"role": "system", "content": "你是一个资深审计专家。请总结以下任务的执行路径：列出调用的工具、关键结果及所有报错。严禁泄露 Key 或密码。字数 200 字内。只输出摘要内容。"},
+            {"role": "user", "content": f"ReAct 轨迹: \n{trace_content}"}
+        ]
+        try:
+            msg, _ = await llm_backend.chat(prompt)
+            return msg.content.strip()
+        except Exception as e:
+            logger.error(f"Trace distillation failed: {e}")
+            return "执行了多个步骤，任务已完成。"
+
 # 单例
 memory_summarizer = MemorySummarizer()
