@@ -102,12 +102,11 @@ class AgentRunner:
                     tool = tool_registry.get_tool(tool_name)
                     obs = await tool.execute(**params) if tool else f"Error: 找不到工具 {tool_name}。"
                     
-                    # 40k 溢出保护
-                    if len(obs) > 40000:
-                        from rman.agent.summarizer import memory_summarizer
-                        logger.warning(f"Observation overflow ({len(obs)} chars). Distilling...")
-                        obs_summary = await memory_summarizer.summarize_observation(tool_name, obs)
-                        obs = f"[Head]\n{obs[:1000]}\n\n[Summary]\n{obs_summary}\n\n[Tail]\n{obs[-2000:]}\n\n[Warning: Output truncated and distilled]"
+                    # 仅保留硬熔断（100,000 字符），防止单次请求超过 LLM API 物理极限
+                    # 不再进行 AI 摘要，确保原始数据的纯净性
+                    if len(obs) > 100000:
+                        logger.warning(f"Observation exceeds 100k chars. Applying hard truncation.")
+                        obs = obs[:100000] + "\n\n[Warning: Output exceeds 100k chars and was hard-truncated for system stability.]"
 
                     # 记录 Observation 层并持久化
                     if call_id:

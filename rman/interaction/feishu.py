@@ -146,7 +146,7 @@ class FeishuInteraction:
             
         except Exception as e:
             logger.exception(f"Agent execution failed: {e}")
-            await self._send_card(chat_id, "❌ 系统错误", str(e), template="red")
+            await self._send_card(
                 chat_id, 
                 "❌ R-MAN 执行出错", 
                 f"处理指令时发生了错误:\n```text\n{str(e)}\n```", 

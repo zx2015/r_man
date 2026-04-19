@@ -53,8 +53,7 @@ class MemorySummarizer:
             return []
 
     async def summarize_observation(self, tool_name: str, raw_output: str) -> str:
-        """对巨大的工具输出执行智能预蒸馏 (头尾采样)"""
-        # 采用头尾各 5k 采样，捕捉表头和末尾可能的结论/报错
+        """(可选) 对巨大的工具输出执行智能预蒸馏。当前系统优先保留原始数据。"""
         sample = raw_output[:5000] + "\n...[Content Omitted]...\n" + raw_output[-5000:]
         prompt = [
             {"role": "system", "content": "你是一个系统数据分析专家。以下是一个工具执行产生的海量原始输出采样。请总结其中包含的关键信息、规律或错误模式。字数控制在 300 字以内。"},
