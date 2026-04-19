@@ -2,7 +2,7 @@ import sqlite3
 import json
 import os
 from typing import List, Dict, Any
-from rman.common.config import logger
+from loguru import logger
 
 class SessionStore:
     """会话历史持久化存储 (SQLite 实现) - 增强版"""
@@ -13,20 +13,60 @@ class SessionStore:
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
-            # 开启 WAL 模式提高并发性能
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS session_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    chat_id TEXT,
-                    role TEXT,
-                    content TEXT,
-                    name TEXT,
-                    tool_call_id TEXT,
-                    tool_calls TEXT,  -- 存储结构化的 tool_calls JSON
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+            
+            # 1. 定义最新的目标架构
+            target_schema = {
+                "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+                "chat_id": "TEXT",
+                "role": "TEXT",
+                "content": "TEXT",
+                "name": "TEXT",
+                "tool_call_id": "TEXT",
+                "tool_calls": "TEXT",
+                "timestamp": "DATETIME DEFAULT CURRENT_TIMESTAMP"
+            }
+            
+            # 2. 检查当前表状态
+            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_history'")
+            if not cursor.fetchone():
+                # 表不存在，直接创建
+                cols_str = ", ".join([f"{k} {v}" for k, v in target_schema.items()])
+                conn.execute(f"CREATE TABLE session_history ({cols_str})")
+            else:
+                # 表已存在，执行系统性迁移
+                cursor = conn.execute("PRAGMA table_info(session_history)")
+                current_columns = {info[1]: info for info in cursor.fetchall()}
+                
+                # 判定是否需要重建（缺少 id 或 字段不全）
+                needs_rebuild = "id" not in current_columns
+                needs_add_cols = [col for col in target_schema if col not in current_columns]
+                
+                if needs_rebuild:
+                    logger.warning("Systematic migration: Rebuilding session_history table...")
+                    # 重命名旧表
+                    conn.execute("ALTER TABLE session_history RENAME TO session_history_old")
+                    # 创建新表
+                    cols_str = ", ".join([f"{k} {v}" for k, v in target_schema.items()])
+                    conn.execute(f"CREATE TABLE session_history ({cols_str})")
+                    
+                    # 动态获取旧表中实际存在的、且新表也需要的列
+                    cursor = conn.execute("PRAGMA table_info(session_history_old)")
+                    old_cols = [info[1] for info in cursor.fetchall() if info[1] in target_schema]
+                    
+                    if old_cols:
+                        old_cols_str = ", ".join(old_cols)
+                        conn.execute(f"""
+                            INSERT INTO session_history ({old_cols_str})
+                            SELECT {old_cols_str} FROM session_history_old
+                        """)
+                    conn.execute("DROP TABLE session_history_old")
+                    logger.info("Systematic migration completed via rebuild.")
+                elif needs_add_cols:
+                    for col in needs_add_cols:
+                        logger.info(f"Adding missing column '{col}' to session_history.")
+                        conn.execute(f"ALTER TABLE session_history ADD COLUMN {col} {target_schema[col]}")
+
             conn.execute("CREATE INDEX IF NOT EXISTS idx_session_chat ON session_history(chat_id)")
 
     def save_message(self, chat_id: str, role: str, content: str, 
