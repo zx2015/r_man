@@ -28,10 +28,16 @@ class CardFormatter:
 
     @classmethod
     def _convert_tables_to_components(cls, text: str) -> list:
-        """识别 Markdown 表格并将其转为飞书原生 table 组件块"""
+        """识别 Markdown 表格及标题，并将其转为飞书原生组件"""
         elements = []
+        # 1. 识别标题行并赋予 heading 样式
+        # 匹配以 # 开头的行，支持 1-6 级
+        header_pattern = r'(^#{1,6}\s+.*)'
+        
+        # 2. 识别表格
         table_pattern = r'(\n(?:\|.*\|(?:\n|$)){2,})'
         
+        # 混合解析：先处理表格，再在剩余文本中处理标题
         parts = re.split(table_pattern, text)
         table_count = 0
 
@@ -46,8 +52,36 @@ class CardFormatter:
                 except Exception as e:
                     logger.error(f"Failed to convert table: {e}")
             
-            if part.strip():
-                elements.append({"tag": "div", "text": {"tag": "lark_md", "content": part.strip()}})
+            if not part.strip(): continue
+
+            # 处理段落中的标题
+            sub_parts = re.split(header_pattern, part, flags=re.MULTILINE)
+            for sub_part in sub_parts:
+                if not sub_part.strip(): continue
+                
+                header_match = re.match(r'^(#{1,6})\s+(.*)', sub_part)
+                if header_match:
+                    level = len(header_match.group(1))
+                    title_text = header_match.group(2).strip()
+                    # 映射规则微调：实现 16px, 15px(近似), 14px 视觉效果
+                    # 1-2级 -> heading-4 (16px)
+                    # 3级   -> heading (16px)
+                    # 4-6级 -> normal (14px)
+                    size_map = {
+                        1: "heading-4", 2: "heading-4", # 16px
+                        3: "heading",                  # 16px (飞书最接近 15px 的档位)
+                        4: "normal", 5: "normal", 6: "normal" # 14px
+                    }
+                    elements.append({
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": f"**{title_text}**",
+                            "text_size": size_map.get(level, "heading")
+                        }
+                    })
+                else:
+                    elements.append({"tag": "div", "text": {"tag": "lark_md", "content": sub_part.strip()}})
         
         return elements
 

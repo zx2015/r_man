@@ -12,6 +12,7 @@
 | :--- | :--- | :--- |
 | [REQ-CORE-001.md](REQ-CORE-001.md) | v1.13.0 | r-man 核心 Agent 框架完整需求文档（ReAct 框架、内置工具集、动态 System Prompt 机制、LLM 后端适配、memory 配置入口） |
 | [REQ-CORE-002.md](REQ-CORE-002.md) | v1.4.0 | r-man 内存系统独立需求文档（memory_dump/memory_get、话题管理、SQLite+向量检索、bge-m3 配置） |
+| [REQ-SKILLS-001.md](REQ-SKILLS-001.md) | v1.0.0 | 智能体技能系统（Skills System）需求文档，支持动态注入专家 Prompt 与 Agentic 链式调用 |
 
 ## 模块概述
 

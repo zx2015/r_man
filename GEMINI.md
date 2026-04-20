@@ -16,6 +16,7 @@
 2.  **Strategy (策略)**:
     - 产出详细的设计方案或修订建议。
     - 针对复杂变更，先更新 `docs/design` 中的相关设计文档。
+    - **Plan Mode 隔离准则 (Plan Mode Isolation)**: 在 Plan Mode（计划模式）下，所有文件修改工具（如 `write_file`, `replace`）会自动重定向到临时的 `plans/` 目录作为草稿。退出计划模式后，必须显式调用工具将内容重新写入真实的 workspace 路径，并执行文件存在性校验，以防止文档丢失或未同步。
 3.  **Execution (执行)**:
     - **同步强制要求 (Synchronicity Mandate)**: 任何代码逻辑的修改，必须同步检查并更新对应的 `docs/requirements/`（需求）和 `docs/design/`（设计）文档。严禁代码领先于文档，确保三者逻辑一致。
     - 遵循“设计驱动开发”，代码编写必须与设计文档保持 100% 同步。

@@ -7,6 +7,7 @@
 ## 文档列表
 
 - [DETAILED_DESIGN.md](DETAILED_DESIGN.md) — ReAct 引擎、Prompt 组装、工具注册详细设计
+- [SKILLS_DESIGN.md](SKILLS_DESIGN.md) — 智能体技能（Skills）系统架构、扫描校验流程与动态调用设计
 
 ## 模块概述
 

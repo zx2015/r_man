@@ -117,7 +117,8 @@ class AgentRunner:
                     self.messages.append(obs_msg)
                     self._persist_message(obs_msg["role"], obs_msg["content"], name=obs_msg.get("name"), tool_call_id=obs_msg.get("tool_call_id"))
 
-                if final: return final, total_usage
+                # 执行完工具后，必须进入下一轮 LLM 循环以分析结果
+                continue
             
             elif final:
                 return final, total_usage
