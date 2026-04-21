@@ -70,19 +70,14 @@ class SessionStore:
                 history.append(msg)
             return history
 
-    def search_sessions(self, query: str, exclude_chat_id: str = None, limit: int = 5) -> List[Dict[str, Any]]:
-        """全文搜索入口：支持排除当前会话内容"""
+    def search_sessions(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """全局全文搜索入口：基于 FTS5 的跨会话检索"""
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             
-            # 使用 FTS5 的 MATCH 语法进行关键词搜索
-            # 如果提供了 exclude_chat_id，则在搜索结果中排除该会话
+            # 使用 FTS5 的 MATCH 语法进行关键词搜索，不再区分 chat_id
             sql = "SELECT rowid, chat_id, role, content, timestamp FROM session_history WHERE session_history MATCH ?"
             params = [query]
-            
-            if exclude_chat_id:
-                sql += " AND chat_id != ?"
-                params.append(exclude_chat_id)
             
             sql += " ORDER BY rank LIMIT ?" # rank 是 FTS5 的内置相关性评分
             params.append(limit)

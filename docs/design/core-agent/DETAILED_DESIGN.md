@@ -43,9 +43,14 @@ classDiagram
         -_try_chat(model: str, messages: List[Message]) -> Message
     }
 
+    class SessionSearchTool {
+        +execute(query: str) -> str
+    }
+
     AgentRunner --> PromptBuilder
     AgentRunner --> ToolRegistry
     AgentRunner --> LLMBackend
+    AgentRunner --> SessionSearchTool
 ```
 
 ## 3. ReAct 状态机实现

@@ -14,21 +14,17 @@ class SessionSearchTool(BaseTool):
     parameters_schema: type[BaseModel] = SessionSearchInput
 
     async def execute(self, query: str, limit: int = 5, **kwargs) -> str:
-        """执行全文搜索"""
+        """执行全局全文搜索"""
         try:
-            # 尝试从 kwargs 中获取 chat_id (由 AgentRunner 注入)
-            current_chat_id = kwargs.get("chat_id")
-            
             results = session_store.search_sessions(
                 query=query, 
-                exclude_chat_id=current_chat_id, 
                 limit=limit
             )
             
             if not results:
                 return f"未在历史会话中找到与 '{query}' 相关的记录。"
 
-            formatted_results = ["### 历史会话搜索结果"]
+            formatted_results = ["### 历史会话全局搜索结果"]
             for r in results:
                 line = f"- [{r['timestamp']}] Session: {r['chat_id']} | Role: {r['role']}\n  Content: {r['content'][:300]}..."
                 formatted_results.append(line)
