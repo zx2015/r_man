@@ -1,6 +1,6 @@
 import os
-from typing import Optional
-from pydantic import BaseModel, Field
+from typing import Optional, List, Union
+from pydantic import BaseModel, Field, validator
 import yaml
 from dotenv import load_dotenv
 
@@ -21,10 +21,18 @@ class LLMConfig(BaseModel):
     base_url: str = Field(default_factory=lambda: os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"))
     api_key: str = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     model: str = "gpt-4o"
+    fallback_models: List[str] = Field(default_factory=list)
     temperature: float = 0.2
     context_window: int = 200000
     max_tokens: int = 32768
     timeout: int = 60
+
+    @validator("fallback_models", pre=True)
+    def parse_fallback_models(cls, v):
+        if isinstance(v, str):
+            # 支持逗号分隔的字符串
+            return [m.strip() for m in v.split(",") if m.strip()]
+        return v or []
 
 class FeishuConfig(BaseModel):
     app_id: str = Field(default_factory=lambda: os.getenv("FEISHU_APP_ID", ""))

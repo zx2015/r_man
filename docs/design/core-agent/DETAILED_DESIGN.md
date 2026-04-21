@@ -36,7 +36,11 @@ classDiagram
     }
 
     class LLMBackend {
-        +chat(messages: List[Message]) -> str
+        -client: AsyncOpenAI
+        -main_model: str
+        -fallback_models: List[str]
+        +chat(messages: List[Message]) -> Tuple[Message, Usage]
+        -_try_chat(model: str, messages: List[Message]) -> Message
     }
 
     AgentRunner --> PromptBuilder
@@ -50,7 +54,11 @@ Agent 的 `run` 方法是一个同步/异步阻塞过程，核心逻辑如下：
 
 1.  **初始化**: 创建 `session_id`，从 `PromptBuilder` 获取 System Prompt，将其作为第一条消息。
 2.  **迭代循环**:
-    - **Step 1**: 将当前 `messages` 发送给 `LLMBackend`。
+    - **Step 1: 带故障转移的 LLM 调用**:
+        1. 调用 `LLMBackend.chat`。
+        2. 后端首先尝试 `main_model`。
+        3. 若捕获到 429/529/500 等异常，后端按顺序遍历 `fallback_models` 列表进行尝试。
+        4. 成功后返回消息及消耗统计，并标识实际使用的模型。
     - **Step 2**: 解析 LLM 输出。
         - 匹配 `Thought:` 和 `Action:` JSON。
         - 若匹配失败且未输出 `Final Answer:`，则向 LLM 注入格式错误提示并重试（最多 1 次）。
