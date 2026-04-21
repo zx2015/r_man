@@ -5,6 +5,7 @@ import sys
 from datetime import datetime
 from rman.common.config import config
 from loguru import logger
+from rman.agent.skills import skill_manager
 
 class PromptBuilder:
     """
@@ -108,11 +109,27 @@ class PromptBuilder:
 - **危险确认**: 执行删除（rm）或强制停止（kill）前，必须在 <final> 解释影响并等待用户回复“确认”。"""
 
     def _build_skills_slot(self) -> str:
-        """Skills 插槽：动态生成已加载技能的信息（待扩展）"""
-        return """# 6. 技能系统 (Skills)
-你拥有长期记忆能力，请通过以下工具维护：
-- **memory_dump**: 发现新事实、用户偏好或阶段性结论时主动存入。
-- **memory_get**: 当感到背景不足或涉及过去讨论时主动搜索。"""
+        """Skills 插槽：动态生成已加载技能的信息"""
+        skills = skill_manager.get_snapshot()
+        
+        # 1. 基础描述
+        base_prompt = """# 6. 技能系统 (Skills)
+你拥有特定的专家领域知识技能。通过参考这些技能，你可以更精准地执行 SOP、调用特定 API 或处理复杂业务逻辑。"""
+
+        # 2. 注入 XML 格式的技能清单
+        if not skills:
+            return base_prompt + "\n目前未加载外部扩展技能。"
+
+        xml_parts = ["<available_skills>"]
+        for s in skills:
+            xml_parts.append(f"  <skill>")
+            xml_parts.append(f"    <name>{s.name}</name>")
+            xml_parts.append(f"    <description>{s.description}</description>")
+            xml_parts.append(f"    <location>{s.location}</location>")
+            xml_parts.append(f"  </skill>")
+        xml_parts.append("</available_skills>")
+        
+        return base_prompt + "\n\n" + "\n".join(xml_parts)
 
     def _build_safety_slot(self) -> str:
         """Safety 插槽：注入安全红线与目录隔离"""

@@ -19,6 +19,7 @@
 | v1.14.0 | 2026-04-16 | embedding 配置字段收敛：仅保留 base_url、api_key、model，与 config/config.yaml 约定对齐 | GitHub Copilot |
 | v1.15.0 | 2026-04-21 | 重构 System Prompt 构建机制为插槽化（Slot-based）架构，细化 Datetime 与 Environment 插槽拆分 | Gemini CLI |
 | v1.16.0 | 2026-04-21 | 引入 LLM Fallback（故障转移）机制，支持配置多级备选模型以应对 429/529 等服务异常 | Gemini CLI |
+| v1.17.0 | 2026-04-21 | 细化技能系统需求：支持 Frontmatter 解析、初始化扫描快照及 XML 结构化 Prompt 注入 | Gemini CLI |
 
 ---
 
@@ -406,13 +407,27 @@ llm:
 
 ---
 
-### FR-005: Agent 运行配置管理
+### FR-009: 技能系统 (Skills System)
 
-**描述**: r-man 的所有运行时参数须集中在配置文件中管理，支持环境变量覆盖。
+**描述**: 提供一套专家级的指令注入机制，使 Agent 能够动态获得特定领域的 SOP 指导。
 
-**配置文件路径**: `config/config.yaml`（默认）
+#### 9.1 技能定义规范
+- **存储路径**: `rman/skills/{skill_id}/SKILL.md`。
+- **文件格式**:
+    - **Frontmatter**: 必须位于文件顶部，由 `---` 包裹的 YAML 块，包含 `name` 和 `description`。
+    - **Body**: 紧随第二个 `---` 之后的 Markdown 内容，定义具体的技能逻辑。
+- **编码**: 强制使用 `UTF-8`。
 
-**完整配置结构**:
+#### 9.2 扫描与解析逻辑
+- **触发时机**: 系统启动（服务初始化）时。
+- **正则解析**: 
+    - 使用 `^---([\s\S]*?)---(?:\r?\n([\s\S]*))?` 提取元数据与主体。
+- **数据结构**: 
+    - 组装为 `SkillDefinition` 对象，包含：`name` (已清洗), `description`, `location` (绝对路径), `body` (指令内容)。
+
+#### 9.3 内存快照与注入
+- **快照**: 扫描结果存储在内存单例中，避免运行时频繁 I/O。
+- **Prompt 注入**: 在插槽化 Prompt 构建时，将简化后的技能信息（Name, Description, Location）封装在 `<available_skills>` 结构化 XML 标签中注入。
 
 ```yaml
 agent:

@@ -24,12 +24,16 @@ logger.add(
 )
 
 from rman.interaction.feishu import feishu_handler
+from rman.agent.skills import skill_manager
 import rman.tools  # 触发工具注册
 
 async def main():
     logger.info("Initializing r-man...")
     
-    # 检查长期记忆环境
+    # 1. 扫描技能系统
+    skill_manager.scan_skills()
+    
+    # 2. 检查长期记忆环境
     try:
         import sqlite3
         import sqlite_vec
