@@ -90,7 +90,7 @@ class TavilyMapTool(BaseTool):
     parameters_schema = TavilyMapParams
 
     @audit_log
-    async def execute(self, url: str) -> str:
+    async def execute(self, url: str, **kwargs) -> str:
         if not tavily_client: return "Error: 未配置 TAVILY_API_KEY。"
         try:
             # 调用 map API (如果 SDK 支持)

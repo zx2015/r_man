@@ -86,7 +86,7 @@ class ReplaceTool(BaseTool):
     parameters_schema = ReplaceParams
 
     @audit_log
-    async def execute(self, file_path: str, old_string: str, new_string: str, instruction: str, allow_multiple: bool = False) -> str: # type: ignore[override]
+    async def execute(self, file_path: str, old_string: str, new_string: str, instruction: str, allow_multiple: bool = False, **kwargs) -> str: # type: ignore[override]
         workspace = os.path.abspath(config.agent.workspace_dir.replace("@", ""))
         target_path = os.path.abspath(os.path.join(workspace, file_path))
 

@@ -110,9 +110,10 @@ class FeishuInteraction:
         self.loop.call_soon_threadsafe(
             lambda: asyncio.create_task(self._send_card(
                 chat_id, 
-                "🤖 R-MAN 正在思考中...", 
-                f"正在处理指令: `{text}`",
+                "🤖 R-MAN 正在思考中...",
+                f"正在处理用户消息: `{text}`",
                 template="blue"
+
             ))
         )
         
@@ -149,7 +150,7 @@ class FeishuInteraction:
             await self._send_card(
                 chat_id, 
                 "❌ R-MAN 执行出错", 
-                f"处理指令时发生了错误:\n```text\n{str(e)}\n```", 
+                f"处理用户消息时发生了错误:\n```text\n{str(e)}\n```", 
                 template="red"
             )
 

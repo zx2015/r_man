@@ -20,6 +20,7 @@
 | v1.15.0 | 2026-04-21 | 重构 System Prompt 构建机制为插槽化（Slot-based）架构，细化 Datetime 与 Environment 插槽拆分 | Gemini CLI |
 | v1.16.0 | 2026-04-21 | 引入 LLM Fallback（故障转移）机制，支持配置多级备选模型以应对 429/529 等服务异常 | Gemini CLI |
 | v1.17.0 | 2026-04-21 | 细化技能系统需求：支持 Frontmatter 解析、初始化扫描快照及 XML 结构化 Prompt 注入 | Gemini CLI |
+| v1.18.0 | 2026-04-21 | 新增 session_search 工具，利用 SQLite FTS5 实现高效的跨会话全文历史搜索 | Gemini CLI |
 
 ---
 
@@ -198,6 +199,7 @@ r-man 仅维护一个飞书 Agent 会话（Session），作为唯一的用户交
 | `process` | 管理 run_shell_command 启动的后台进程（status/read/kill） | `action: str`, `pid: int`, `offset: int?` | 运行状态 / 累积输出 / 终止结果 |
 | `memory_dump` | 保存当前对话内存 | `tag: str?`, `description: str?` | 内存 ID 或 错误信息 |
 | `memory_get` | 获取保存的内存 | `memory_id: str?`, `tag: str?`, `query: str?`, `limit: int?` | 内存内容或 错误信息 |
+| `session_search` | 全文搜索历史会话关键词，自动排除当前会话 | `query: str`, `limit: int?` | 历史消息片段及 SessionID 列表 |
 
 #### 工具详细说明
 
@@ -252,6 +254,13 @@ r-man 仅维护一个飞书 Agent 会话（Session），作为唯一的用户交
 - 适用场景：用户切换新话题时、恢复之前的对话、参考历史信息、继续未完成的任务。
 
 > 说明：memory_dump/memory_get 的内存存储、向量化、检索排序等详细需求定义见独立文档 [REQ-CORE-002](REQ-CORE-002.md)。
+
+**`session_search`** — 会话全文搜索
+- 基于 SQLite FTS5 实现的高性能关键词检索。
+- `query`：支持 FTS5 查询语法。
+- `limit`：返回最相关的结果数量。
+- **自动排他性**：工具会自动检测当前 Agent 的 `chat_id`，并在搜索结果中过滤掉当前会话的所有记录，确保 Agent 专注于回溯更久远的历史，避免上下文冗余。
+- 返回内容包含：关键词周围的文本片段（Snippet）、所属角色、Session ID 以及记录时间。
 
 #### 安全约束
 

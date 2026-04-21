@@ -100,7 +100,8 @@ class AgentRunner:
                     call_id = action.get("call_id")
                     
                     tool = tool_registry.get_tool(tool_name)
-                    obs = await tool.execute(**params) if tool else f"Error: 找不到工具 {tool_name}。"
+                    # 注入 chat_id 作为扩展上下文，供 session_search 等工具使用
+                    obs = await tool.execute(chat_id=self.chat_id, **params) if tool else f"Error: 找不到工具 {tool_name}。"
                     
                     # 仅保留硬熔断（100,000 字符），防止单次请求超过 LLM API 物理极限
                     # 不再进行 AI 摘要，确保原始数据的纯净性
