@@ -15,7 +15,7 @@ class ReadFileTool(BaseTool):
     description = "读取指定文件的内容。不再局限于工作目录。单次建议读取不超过 100 行。"
     parameters_schema = ReadFileParams
 
-    async def execute(self, path: str, start_line: int = 1, end_line: Optional[int] = None) -> str: # type: ignore[override]
+    async def execute(self, path: str, start_line: int = 1, end_line: Optional[int] = None, **kwargs) -> str: # type: ignore[override]
         # 路径规范化 (处理相对路径)
         workspace = os.path.abspath(config.agent.workspace_dir.replace("@", ""))
         target_path = os.path.abspath(os.path.join(workspace, path))
@@ -55,7 +55,7 @@ class WriteFileTool(BaseTool):
     parameters_schema = WriteFileParams
 
     @audit_log
-    async def execute(self, path: str, content: str) -> str: # type: ignore[override]
+    async def execute(self, path: str, content: str, **kwargs) -> str: # type: ignore[override]
         workspace = os.path.abspath(config.agent.workspace_dir.replace("@", ""))
         target_path = os.path.abspath(os.path.join(workspace, path))
 
