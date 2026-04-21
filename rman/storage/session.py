@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 from loguru import logger
 
 class SessionStore:
-    """会话历史持久化存储 (SQLite 实现) - 增强版"""
+    """会话历史持久化存储 (SQLite FTS5 原生实现)"""
     def __init__(self, db_path: str = "data/memory.db"):
         self.db_path = db_path
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -14,64 +14,28 @@ class SessionStore:
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
-            
-            # 1. 定义最新的目标架构
-            target_schema = {
-                "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
-                "chat_id": "TEXT",
-                "role": "TEXT",
-                "content": "TEXT",
-                "name": "TEXT",
-                "tool_call_id": "TEXT",
-                "tool_calls": "TEXT",
-                "timestamp": "DATETIME DEFAULT CURRENT_TIMESTAMP"
-            }
-            
-            # 2. 检查当前表状态
-            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_history'")
-            if not cursor.fetchone():
-                # 表不存在，直接创建
-                cols_str = ", ".join([f"{k} {v}" for k, v in target_schema.items()])
-                conn.execute(f"CREATE TABLE session_history ({cols_str})")
-            else:
-                # 表已存在，执行系统性迁移
-                cursor = conn.execute("PRAGMA table_info(session_history)")
-                current_columns = {info[1]: info for info in cursor.fetchall()}
-                
-                # 判定是否需要重建（缺少 id 或 字段不全）
-                needs_rebuild = "id" not in current_columns
-                needs_add_cols = [col for col in target_schema if col not in current_columns]
-                
-                if needs_rebuild:
-                    logger.warning("Systematic migration: Rebuilding session_history table...")
-                    # 重命名旧表
-                    conn.execute("ALTER TABLE session_history RENAME TO session_history_old")
-                    # 创建新表
-                    cols_str = ", ".join([f"{k} {v}" for k, v in target_schema.items()])
-                    conn.execute(f"CREATE TABLE session_history ({cols_str})")
-                    
-                    # 动态获取旧表中实际存在的、且新表也需要的列
-                    cursor = conn.execute("PRAGMA table_info(session_history_old)")
-                    old_cols = [info[1] for info in cursor.fetchall() if info[1] in target_schema]
-                    
-                    if old_cols:
-                        old_cols_str = ", ".join(old_cols)
-                        conn.execute(f"""
-                            INSERT INTO session_history ({old_cols_str})
-                            SELECT {old_cols_str} FROM session_history_old
-                        """)
-                    conn.execute("DROP TABLE session_history_old")
-                    logger.info("Systematic migration completed via rebuild.")
-                elif needs_add_cols:
-                    for col in needs_add_cols:
-                        logger.info(f"Adding missing column '{col}' to session_history.")
-                        conn.execute(f"ALTER TABLE session_history ADD COLUMN {col} {target_schema[col]}")
+            self._create_fts_table(conn)
 
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_session_chat ON session_history(chat_id)")
+    def _create_fts_table(self, conn: sqlite3.Connection):
+        """创建 FTS5 虚拟表，配置多语言分词"""
+        # 注意：FTS5 表不支持 PRIMARY KEY 声明，自动使用 rowid
+        # 使用 unicode61 分词器以支持中文和多国语言
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS session_history USING fts5(
+                chat_id, 
+                role, 
+                content, 
+                name, 
+                tool_call_id, 
+                tool_calls, 
+                timestamp,
+                tokenize='unicode61'
+            )
+        """)
 
     def save_message(self, chat_id: str, role: str, content: str, 
                      name: str = None, tool_call_id: str = None, tool_calls: Any = None):
-        """保存单条消息，支持结构化 tool_calls"""
+        """保存单条消息到 FTS5 表"""
         tool_calls_json = json.dumps(tool_calls, ensure_ascii=False) if tool_calls else None
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
@@ -80,12 +44,12 @@ class SessionStore:
             )
 
     def load_history(self, chat_id: str, limit: int = 50) -> List[Dict[str, Any]]:
-        """按 ID 顺序加载历史，确保 ReAct 链条逻辑正确"""
+        """从 FTS5 表加载历史，使用 rowid 替代 id 进行排序"""
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            # 先取最近的 limit 条，再按 ID 正序排列
+            # FTS5 默认拥有 rowid 字段
             cursor = conn.execute(
-                "SELECT role, content, name, tool_call_id, tool_calls FROM (SELECT * FROM session_history WHERE chat_id = ? ORDER BY id DESC LIMIT ?) ORDER BY id ASC",
+                "SELECT role, content, name, tool_call_id, tool_calls FROM (SELECT rowid, * FROM session_history WHERE chat_id = ? ORDER BY rowid DESC LIMIT ?) ORDER BY rowid ASC",
                 (chat_id, limit)
             )
             rows = cursor.fetchall()
@@ -105,6 +69,37 @@ class SessionStore:
                         pass
                 history.append(msg)
             return history
+
+    def search_sessions(self, query: str, exclude_chat_id: str = None, limit: int = 5) -> List[Dict[str, Any]]:
+        """全文搜索入口：支持排除当前会话内容"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            
+            # 使用 FTS5 的 MATCH 语法进行关键词搜索
+            # 如果提供了 exclude_chat_id，则在搜索结果中排除该会话
+            sql = "SELECT rowid, chat_id, role, content, timestamp FROM session_history WHERE session_history MATCH ?"
+            params = [query]
+            
+            if exclude_chat_id:
+                sql += " AND chat_id != ?"
+                params.append(exclude_chat_id)
+            
+            sql += " ORDER BY rank LIMIT ?" # rank 是 FTS5 的内置相关性评分
+            params.append(limit)
+            
+            cursor = conn.execute(sql, params)
+            rows = cursor.fetchall()
+            
+            results = []
+            for row in rows:
+                results.append({
+                    "rowid": row["rowid"],
+                    "chat_id": row["chat_id"],
+                    "role": row["role"],
+                    "content": row["content"],
+                    "timestamp": row["timestamp"]
+                })
+            return results
 
 # 单例
 session_store = SessionStore()
