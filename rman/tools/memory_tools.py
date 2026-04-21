@@ -14,7 +14,7 @@ class MemorySearchTool(BaseTool):
     description = "搜索长期记忆，寻找与当前任务相关的历史背景、执行结果或用户偏好。"
     parameters_schema = MemorySearchParams
 
-    async def execute(self, query: str, limit: int = 3) -> str: # type: ignore[override]
+    async def execute(self, query: str, limit: int = 3, **kwargs) -> str: # type: ignore[override]
         # 1. 对查询内容进行向量化
         vec = await memory_summarizer.embed(query)
         if not vec:
