@@ -11,22 +11,21 @@
 
 ## 🚀 核心特性
 
-- **🤖 智能推理 (ReAct)**: 基于 `<think>` / `<final>` 标签解析，实现标准的“思考-行动-观察”闭环。
+- **🤖 智能推理 (ReAct & Fallback)**: 
+    - 深度实现“思考-行动-观察”闭环。
+    - **高可用保障**: 内置 **LLM Fallback 机制**，在主模型遇到拥堵 (429/529) 或故障时，自动按优先级切换至备选模型（如 Gemini、Kimi 等）。
+- **🧩 插件化技能系统**: 
+    - 支持动态扫描 `rman/skills/` 下的专家 SOP 文件。
+    - 采用 Frontmatter 语义解析与 **XML 结构化 Prompt 注入**，让 Agent 能够即时获得特定领域的专家知识。
+- **🔍 混合记忆检索 (FTS5 & Vector)**:
+    - **全局全文搜索**: 基于 **SQLite FTS5** 引擎，支持跨会话的秒级关键词检索。
+    - **语义记忆**: 结合 **sqlite-vec** 提供脱敏后的技术摘要存储与向量检索。
+- **🎭 自适应专家身份**: 
+    - 采用**插槽化 (Slot-based) Prompt 架构**。
+    - 身份不再硬编码，Agent 能够根据任务需求自主切换专业角色（工程师、运维、研究员等）。
 - **🔌 深度集成飞书**:
     - **WebSocket 模式**: 无需公网 IP，即可实现双向实时通信。
-    - **卡片化交互**: 自动将 Markdown 转换为飞书原生 UI 组件（表格、分栏、状态色）。
-- **🧠 长期记忆系统**:
-    - 基于 **SQLite + sqlite-vec** 的本地向量存储。
-    - **隐私优先**: 仅存储脱敏摘要，不记录原始对话。
-    - **自动维护**: 默认 90 天有效期，支持 24 小时自动巡检清理。
-- **🛠️ 强大的工具箱**:
-    - **文件系统**: 具备 `read`, `write`, `replace` 手术刀式代码/配置修改能力。
-    - **进程管理**: 支持后台异步执行 Shell 命令，具备 PID 追踪与日志读取能力。
-    - **联网研究**: 集成 Tavily AI，支持实时搜索、网页提取与主题研究。
-- **🛡️ 工业级安全**:
-    - **目录隔离**: 严格锁定在 `workspace/` 与 `/tmp/` 目录。
-    - **人工确认**: 针对删除、强杀进程等破坏性操作，强制触发文字指令确认流。
-    - **全面审计**: 所有敏感操作意图同步写入独立的 `audit.log`。
+    - **互动卡片**: 自动将 Markdown 渲染为飞书原生 UI（多级标题优化、动态表格、状态色）。
 
 ---
 
@@ -39,14 +38,18 @@ graph TD
     end
     subgraph "Reasoning (Agent)"
         B --> C[ReAct Engine]
-        C --> D[Dynamic Prompt Builder]
+        C --> D[Slot-based Prompt Builder]
+        D --> D1[Identity/Environment/Datetime Slots]
+        D --> D2[Skills/Tools Slots]
     end
     subgraph "Capability (Tools)"
-        C --> E[Tools: File/Shell/Tavily]
+        C --> E[Built-in Tools]
+        E --> E1[File/Shell/Search]
         E --> F[Audit Logging]
     end
     subgraph "Storage (Persistence)"
-        C --> G[Vector Memory]
+        C --> G1[Vector Memory]
+        C --> G2[FTS5 Session Index]
         E --> H[System Files]
     end
 ```
