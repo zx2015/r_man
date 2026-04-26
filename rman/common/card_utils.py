@@ -136,8 +136,7 @@ class CardFormatter:
         return {
             "tag": "table",
             "page_size": 10,
-            "row_height": "auto",      # 自适应内容高度
-            "row_max_height": "120px", # 限制单行最大高度，防止布局异常，同时配合 auto 模式
+            "row_height": "middle",    # 使用中等行高 (40px)，兼顾美观与稳定性
             "header_style": {"background_style": "grey", "bold": True},
             "columns": columns,
             "rows": formatted_rows
