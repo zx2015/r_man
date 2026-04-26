@@ -87,40 +87,59 @@ class CardFormatter:
 
     @classmethod
     def _parse_markdown_table(cls, md_table: str) -> Optional[dict]:
-        """将单个 Markdown 表格文本解析为飞书 JSON 表格"""
+        """将单个 Markdown 表格文本解析为飞书 JSON 表格 (带智能权重计算)"""
         lines = [l.strip() for l in md_table.strip().split("\n") if l.strip()]
         if len(lines) < 3: return None
 
-        # 提取列 (使用常量上限)
+        # 1. 提取原始数据
         header_cells = [c.strip() for c in lines[0].split("|") if c.strip()][:FEISHU_CARD_COLUMN_LIMIT]
+        rows = []
+        for line in lines[2:]:
+            cells = [c.strip() for c in line.split("|") if c.strip()]
+            if cells: rows.append(cells)
         
+        if not rows: return None
+
+        # 2. 计算每列的最大字符长度（用于权重分配）
+        col_count = len(header_cells)
+        max_lengths = [len(h) for h in header_cells]
+        for row in rows:
+            for i in range(min(len(row), col_count)):
+                max_lengths[i] = max(max_lengths[i], len(row[i]))
+        
+        total_len = sum(max_lengths) or 1
+        
+        # 3. 构造列描述，分配权重
         columns = []
         col_names = []
         for i, cell in enumerate(header_cells):
             name = f"col_{i}"
-            columns.append({"name": name, "display_name": cell, "data_type": "markdown"})
+            # 计算权重比例：最小 5%，防止过窄
+            weight = max(5, int((max_lengths[i] / total_len) * 100))
+            columns.append({
+                "name": name, 
+                "display_name": cell, 
+                "data_type": "markdown",
+                "width": f"{weight}%" # 使用百分比权重
+            })
             col_names.append(name)
 
-        # 提取行
-        rows = []
-        for line in lines[2:]:
-            cells = [c.strip() for c in line.split("|") if c.strip()]
-            if not cells: continue
-            row = {}
-            for i, cell in enumerate(cells):
+        # 4. 组装行数据
+        formatted_rows = []
+        for row in rows:
+            record = {}
+            for i, cell in enumerate(row):
                 if i < len(col_names):
-                    row[col_names[i]] = cell
-            rows.append(row)
-
-        if not rows: return None
+                    record[col_names[i]] = cell
+            formatted_rows.append(record)
 
         return {
             "tag": "table",
             "page_size": 10,
-            "row_height": "low",
+            "row_height": "low", # 恢复为稳健的低高度模式，防止后台校验失败
             "header_style": {"background_style": "grey", "bold": True},
             "columns": columns,
-            "rows": rows
+            "rows": formatted_rows
         }
 
     @classmethod
