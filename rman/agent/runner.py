@@ -85,10 +85,7 @@ class AgentRunner:
             # 中间预告
             if actions_to_run and on_intermediate_status:
                 for action in actions_to_run:
-                    tool_name = action.get("tool")
-                    params = action.get("parameters", {})
-                    intent = params.get("description") or params.get("instruction")
-                    desc = final if final else (f"✅ 准备执行 `{tool_name}`：{intent}" if intent else f"⚙️ 正在调用工具 `{tool_name}`...")
+                    desc = self._format_intermediate_status(action, think)
                     await on_intermediate_status(desc)
                     break
 
@@ -182,3 +179,37 @@ class AgentRunner:
                 actions.append(json.loads(match.group(1).strip()))
             except: pass
         return think, final, actions
+
+    def _format_intermediate_status(self, action: Dict, think: Optional[str]) -> str:
+        """构造两行式详细中间状态反馈"""
+        tool_name = action.get("tool", "unknown")
+        params = action.get("parameters", {})
+
+        # 1. 提取意图 (Reason)
+        # 优先从工具参数中获取描述，否则从 think 中截取第一句
+        reason = params.get("description") or params.get("instruction") or params.get("reason")
+        if not reason and think:
+            # 提取第一句或前 30 个字符
+            first_line = think.split('\n')[0].strip()
+            reason = (first_line[:30] + "...") if len(first_line) > 30 else first_line
+
+        if not reason:
+            reason = "执行自动化任务"
+
+        # 2. 提取目标 (Target)
+        target = "系统环境"
+        if "file_path" in params:
+            target = params["file_path"]
+        elif "path" in params:
+            target = params["path"]
+        elif "command" in params:
+            cmd = params["command"]
+            target = (cmd[:40] + "...") if len(cmd) > 40 else cmd
+        elif "query" in params:
+            target = params["query"]
+        elif "keyword" in params:
+            target = params["keyword"]
+        elif "url" in params:
+            target = params["url"]
+
+        return f"准备调用 {tool_name} : {reason}\n目标：{target}"

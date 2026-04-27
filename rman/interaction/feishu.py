@@ -136,7 +136,13 @@ class FeishuInteraction:
             # 定义回调逻辑
             async def intermediate_callback(content: str):
                 if config.agent.enable_intermediate_status:
-                    await self._send_card(chat_id, "⚙️ R-MAN 执行中...", content, template="turquoise")
+                    # 对两行式内容进行简单的 Markdown 强化
+                    lines = content.split('\n')
+                    if len(lines) >= 2:
+                        formatted_content = f"**{lines[0]}**\n> {lines[1]}"
+                    else:
+                        formatted_content = content
+                    await self._send_card(chat_id, "⚙️ R-MAN 执行中...", formatted_content, template="turquoise")
             
             # 运行 Agent
             final_answer, usage = await runner.run(text, on_intermediate_status=intermediate_callback)
@@ -224,6 +230,10 @@ class FeishuInteraction:
         })
 
         card_json = {
+            "config": {
+                "wide_screen_mode": True,
+                "enable_forward": True
+            },
             "header": {
                 "title": {"tag": "plain_text", "content": title},
                 "template": inferred_template

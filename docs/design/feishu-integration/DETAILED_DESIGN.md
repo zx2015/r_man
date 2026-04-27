@@ -3,6 +3,7 @@
 | 版本号 | 日期 | 变更说明 | 作者 |
 | :--- | :--- | :--- | :--- |
 | v1.0.0 | 2026-04-16 | 初始版本，定义 WebSocket 客户端与任务调度 | Gemini CLI |
+| v1.1.0 | 2026-04-27 | 详细中间状态反馈机制设计 | Gemini CLI |
 
 ## 1. 模块职责
 
@@ -85,9 +86,41 @@ class TaskQueue:
 }
 ```
 
+#### 4.2.2 表格渲染优化算法
+为了解决列数较多时的排版混乱问题，`CardFormatter` 采用以下策略：
+1.  **采样分析**: 遍历表格前 10 行数据，计算每列的最大平均字符长度。
+2.  **权重分配**:
+    - 总权重设定为 100。
+    - 根据每列长度占比分配 `weighted` 值。
+    - **保底逻辑**: 每列最小分配 5% 权重，防止极短列消失。
+3.  **模式切换**:
+    - 强制设置 `row_height: "auto"`。
+    - 在卡片 `config` 层注入 `wide_screen_mode: true`。
+
+#### 4.2.3 增强型中间状态反馈 (Detailed Status Design)
+为了解决 Agent 执行过程中的“黑盒”问题，系统引入结构化中间反馈。
+
+**数据流向**:
+1.  **AgentRunner**: 解析出 `Action` 和 `Action Input`。
+2.  **Callback**: 构造包含 `tool`, `thought_summary`, `target_param` 的结构化字符串。
+3.  **FeishuInteraction**: 接收字符串并渲染为两行文本卡片。
+
+**渲染逻辑示例**:
+- **第一行**: `**准备调用 {tool}** : {thought_summary}` (加粗工具名)
+- **第二行**: `> 目标：{target_param}` (使用引用块样式或普通文本)
+
+**各工具 target 提取规则**:
+- `read_file` / `write_file` / `replace`: 提取 `file_path`。
+- `bash`: 提取命令的前 30 个字符并追加 `...`。
+- `memory_search`: 提取 `query`。
+- `web_search`: 提取搜索词。
+
 #### 实现方法：`_send_card`
 - **输入**: `chat_id`, `title`, `markdown_content`, `color_template`
-- **逻辑**: 构造上述 JSON，调用 `client.im.v1.message.create` 接口，并使用 `loop.run_in_executor` 保持异步非阻塞。
+- **逻辑**: 
+    1. 构造 JSON 结构。
+    2. **配置开启**: 设置 `config.wide_screen_mode = True`。
+    3. 调用 `client.im.v1.message.create` 接口，并使用 `loop.run_in_executor` 保持异步非阻塞。
 
 ## 5. 异常处理
 
