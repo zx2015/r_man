@@ -80,7 +80,7 @@ class TaskQueue:
         },
         {
             "tag": "note",
-            "elements": [{"tag": "plain_text", "content": "⏱ 任务完成"}]
+            "elements": [{"tag": "plain_text", "content": "⏱ [Time] | R-MAN | [Hostname]"}]
         }
     ]
 }

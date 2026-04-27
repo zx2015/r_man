@@ -12,6 +12,7 @@ from rman.common.config import config
 from rman.interaction.queue import task_queue
 from loguru import logger
 from datetime import datetime
+import socket
 
 class FeishuInteraction:
     def __init__(self):
@@ -20,6 +21,7 @@ class FeishuInteraction:
         self.allowed_user = config.feishu.allowed_user_open_id
         self.loop = None
         self.last_active_time = datetime.now()
+        self.hostname = socket.gethostname()
         
         # 初始化 API Client
         self.client = lark.Client.builder() \
@@ -209,14 +211,14 @@ class FeishuInteraction:
                         "tag": "column",
                         "width": "weighted", "weight": 1,
                         "elements": [
-                            {"tag": "div", "text": {"tag": "lark_md", "content": f"🏷 **Model**\n{usage.get('model', 'N/A')}"}}
+                            {"tag": "div", "text": {"tag": "lark_md", "content": f"🏷 {usage.get('model', 'N/A')}"}}
                         ]
                     },
                     {
                         "tag": "column",
                         "width": "weighted", "weight": 1,
                         "elements": [
-                            {"tag": "div", "text": {"tag": "lark_md", "content": f"📊 **Tokens**\nIn: {usage.get('input', 0)} / Out: {usage.get('output', 0)}"}}
+                            {"tag": "div", "text": {"tag": "lark_md", "content": f"📊 Tokens In: {usage.get('input', 0)} / Out: {usage.get('output', 0)}"}}
                         ]
                     }
                 ]
@@ -226,7 +228,7 @@ class FeishuInteraction:
         curr_time = datetime.now().strftime('%H:%M:%S')
         final_elements.append({
             "tag": "note",
-            "elements": [{"tag": "plain_text", "content": f"⏱ {curr_time} | R-MAN Intelligence Service"}]
+            "elements": [{"tag": "plain_text", "content": f"⏱ {curr_time} | R-MAN | {self.hostname}"}]
         })
 
         card_json = {

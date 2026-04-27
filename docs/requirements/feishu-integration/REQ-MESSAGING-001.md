@@ -4,7 +4,9 @@
 | :--- | :--- | :--- | :--- |
 | v1.0.0 | 2026-04-17 | 初始版本，定义交互式卡片结构、Token 消耗统计及 Model 展示 | Gemini CLI |
 | v1.1.0 | 2026-04-21 | 优化表格渲染：引入宽屏模式、自适应行高及动态列宽分配策略 | Gemini CLI |
+| v1.2.0 | 2026-04-27 | 调整卡片注脚文案：从 Intelligence Service 切换为 Hostname 识别 | Gemini CLI |
 | v1.2.0 | 2026-04-27 | 增强中间状态反馈：支持两行式详细工具调用展示 | Gemini CLI |
+| v1.2.1 | 2026-04-27 | 精简状态展示：Model 与 Tokens 切换为单行极简样式 | Gemini CLI |
 
 ## 1. 业务目标
 为了提升用户反馈的直观性并提供透明的资源消耗监控，R-MAN 必须采用飞书交互式卡片作为标准通讯格式。
@@ -18,7 +20,9 @@
     - 关键结果使用 `column_set` 进行分栏展示。
     - 长文本使用支持 Markdown 子集的 `div` 模块。
 - **Table Support**: 当需要展示结构化列表（如进程清单、文件属性）时，允许并在 Prompt 中引导模型产出符合卡片 2.0 规范的 `table` 标签结构（包含 `columns` 和 `rows` 数组）。
-- **Status Bar**: 使用 `column_set` 实现左右对称布局，左侧显示模型名，右侧显示 Token 消耗。
+- **Status Bar**: 使用 `column_set` 实现左右对称布局，强制采用单行极简样式：
+    - 左侧: `🏷 [ModelName]`
+    - 右侧: `📊 Tokens In: [InCount] / Out: [OutCount]`
 - **Color Coding**: 
     - 成功: `text_color:green`
     - 消耗: `text_color:grey`
@@ -67,7 +71,7 @@
 
 ## 3. 数据契约
 ```text
-注脚格式: ⏱ [HH:mm:ss] | Model: [ModelName] | In: [InCount] | Out: [OutCount]
+注脚格式: ⏱ [HH:mm:ss] | R-MAN | [Hostname]
 ```
 
 ## 4. 验收标准
