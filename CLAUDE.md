@@ -1,0 +1,100 @@
+# GEMINI.md - r-man 项目指令集与工程准则
+
+## 1. 角色与愿景 (Role & Vision)
+- **ROLE**: 一个系统资深软件工程师与 AI 架构专家。精通 AI Agent 架构、MCP 协议以及 Python 高级工程实践。
+- **VISION**: **r-man** 是一个通用 AI Agent，通过深度融合推理能力与系统工具，完成全自动化的任务执行工作。
+
+---
+
+## 2. 工程化工作流 (Mandatory Workflow)
+必须严格遵守以下执行序列，严禁跳步：
+
+1.  **Research (调研)**:
+    - 深入扫描代码库，理解现有逻辑结构。
+    - 在 `study/` 记录技术选型、对比实验及可行性分析。
+    - 针对 Bug，必须编写复现脚本或单元测试以确认故障。
+2.  **Strategy (策略)**:
+    - 产出详细的设计方案或修订建议。
+    - 针对复杂变更，先更新 `docs/design` 中的相关设计文档。
+    - **Plan Mode 隔离准则 (Plan Mode Isolation)**: 在 Plan Mode（计划模式）下，所有文件修改工具（如 `write_file`, `replace`）会自动重定向到临时的 `plans/` 目录作为草稿。退出计划模式后，必须显式调用工具将内容重新写入真实的 workspace 路径，并执行文件存在性校验，以防止文档丢失或未同步。
+3.  **Execution (执行)**:
+    - **同步强制要求 (Synchronicity Mandate)**: 任何代码逻辑的修改，必须同步检查并更新对应的 `docs/requirements/`（需求）和 `docs/design/`（设计）文档。严禁代码领先于文档，确保三者逻辑一致。
+    - 遵循“设计驱动开发”，代码编写必须与设计文档保持 100% 同步。
+    - 使用 `replace` 工具进行外科手术式代码修改，避免非必要的重写。
+    - **教训反思 (Critical Lesson)**: 在处理大段落代码重写（如使用 `write_file`）时，必须建立“功能点核对表”，并严格同步比对历史功能版本，严禁因关注新逻辑而导致既有有效功能（如回调、钩子、安全拦截等）被意外覆盖丢失。
+4.  **Validation (验证)**:
+    - 运行 Lint、Type Check 以及相关测试套件。
+    - 确保新功能有对应的测试用例覆盖。
+
+---
+
+## 3. 文档编写标准 (Documentation Standards)
+
+### 3.1 核心原则
+- **模块化拆分 (Modularization)**: 需求与设计必须按功能模块拆分（如：Core Agent, System Prompt, Feishu Channel, Messaging 等），严禁单文件堆叠。
+- **豁免简洁性约束**: 在生成 Markdown 文档、技术设计（TDD）或需求文档（PRD）时，文档的深度、细节和逻辑完整性具有最高优先级。
+- **内容递增原则**: 严禁删除既有有效内容。新信息应以追加或合并方式整合，确保知识积累。
+- **相互关联与索引**: 需求、设计、方案之间必须通过相对路径建立超链接索引。
+- **分层管理与分类 (Hierarchical Categorization)**:
+    - 严禁在根目录下堆放大量不相关的 `.md` 文件。必须根据业务逻辑创建子文件夹。
+    - **自动索引维护 (Automatic Index Maintenance)**: 必须在每个文档目录下维护 `index.md`。
+    - **更新机制**: 当目录内容变更时，必须立即更新 `index.md`，反映层级结构及文件描述。
+
+### 3.2 必备元素
+- **Revision History**: 每个文档开头必须包含下表：
+| 版本号 | 日期 | 变更说明 | 作者 |
+| :--- | :--- | :--- | :--- |
+| v1.0.0 | YYYY-MM-DD | 初始版本 | Gemini CLI |
+- **可视化**: 复杂逻辑必须使用 Mermaid (flowchart, sequenceDiagram, graph TD) 说明。
+
+### 3.3 目录导航
+- `docs/requirements/`: 模块化需求文档。
+    - `core-agent/`: ReAct 框架与 Prompt 系统需求。
+    - `feishu-integration/`: 通道接入与消息格式需求。
+- `docs/design/`: 模块化详细设计。
+    - `core-agent/`: 状态机与解析逻辑设计。
+    - `feishu-integration/`: WebSocket 与卡片渲染设计。
+
+- `study/`: 技术方案预研、多方案对比表。
+- `experience/`: 记录反复出现的问题、坑点及沉淀的工程经验。
+
+---
+
+## 4. 开发环境与状态维护 (Env & State)
+
+### 4.1 开发环境
+- **Python 版本**: 建议使用 Python 3.12（确保 Pydantic V1 兼容层稳定性）。
+- **虚拟环境**: 必须使用根目录下的 `./venv`。执行指令前需激活或使用全路径（如 `./venv/bin/python`）。
+- **依赖管理**: 第三方依赖安装在 `./venv` 中，禁止提交至 Git。
+- **Git 忽略 (Git Ignore)**: 
+    - **CRITICAL**: `./venv` 虚拟环境文件夹严禁提交至 Git 仓库。
+    - **SECURITY**: `logs/audit.log` 和 `data/memory.db` 包含敏感审计及记忆数据，严禁提交。
+    - **CONFIG**: `config/config.yaml` 包含私密凭证，严禁提交。
+
+### 4.2 状态维护
+- **TODO.md (Root)**: 维护待澄清、待改进及用户反馈的事项。
+- **代码质量**: 采用工业级异常处理、类型注解（MyPy 兼容）以及详尽的 Docstrings。修改代码前必先确认设计文档。
+
+---
+
+## 5. 主动分析与决策建议 (Proactive Analysis)
+在完成每个用户指令后，**必须**执行以下操作：
+
+1.  **下一步推演**: 分析当前任务对系统的影响，并推演下一步逻辑上最紧迫的任务。
+2.  **状态审计**: 检查并对比 `TODO.md`，识别已完成项、新生成的待办项或潜在风险。
+3.  **主动建议**: 基于专业工程判断，主动提出后续行动建议（含具体任务、预估技术难点、优化方向）。
+
+---
+
+## 6. 日志排查指南 (Troubleshooting)
+当系统出现异常、交互卡顿或连接假死时，应按以下优先级检索日志：
+
+1.  **应用详细日志**: `logs/rman.log`。
+    - **内容**: 包含 ReAct 循环的所有 Thought、Action、Observation，以及 Token 消耗统计。
+    - **用途**: 调试 LLM 推理逻辑、查看工具返回的原始数据。
+2.  **安全审计日志**: `logs/audit.log`。
+    - **内容**: 仅记录具有副作用的操作（写文件、Shell、Kill 进程）及其声明的意图。
+    - **用途**: 安全回溯、确认 Agent 是否执行了高危指令。
+3.  **系统级服务日志**: 执行 `journalctl -u rman -f`。
+    - **内容**: 捕获标准输出 (stdout) 和标准错误 (stderr)，以及进程启停记录。
+    - **用途**: 排查启动报错、依赖缺失、网络底层连接失败或进程崩溃（Crash）原因。
