@@ -138,10 +138,10 @@ class FeishuInteraction:
             # 定义回调逻辑
             async def intermediate_callback(content: str):
                 if config.agent.enable_intermediate_status:
-                    # 对两行式内容进行简单的 Markdown 强化
-                    lines = content.split('\n')
-                    if len(lines) >= 2:
-                        formatted_content = f"**{lines[0]}**\n> {lines[1]}"
+                    # 采用更稳健的解析逻辑：首行为意图，余下全部为指令代码
+                    parts = content.split('\n', 1)
+                    if len(parts) == 2:
+                        formatted_content = f"**{parts[0]}**\n```bash\n{parts[1].strip()}\n```"
                     else:
                         formatted_content = content
                     await self._send_card(chat_id, "⚙️ R-MAN 执行中...", formatted_content, template="turquoise")
