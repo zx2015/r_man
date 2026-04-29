@@ -92,6 +92,28 @@ class FeishuInteraction:
         if self.loop and self.loop.is_running():
             self.loop.create_task(task_queue.stop())
 
+    async def upload_image(self, image_bytes: bytes) -> Optional[str]:
+        """上传图片到飞书并返回 image_key"""
+        from lark_oapi.api.im.v1 import CreateImageRequest, CreateImageRequestBody
+        import io
+        try:
+            request = CreateImageRequest.builder() \
+                .request_body(CreateImageRequestBody.builder() \
+                    .image_type("message") \
+                    .image(io.BytesIO(image_bytes)) \
+                    .build()) \
+                .build()
+            
+            response = await self.loop.run_in_executor(None, self.client.im.v1.image.create, request)
+            if response.success():
+                return response.data.image_key
+            else:
+                logger.error(f"Failed to upload image: {response.code}, {response.msg}")
+                return None
+        except Exception as e:
+            logger.error(f"Exception during image upload: {e}")
+            return None
+
     def _on_message_received(self, data: P2ImMessageReceiveV1) -> None:
         self.last_active_time = datetime.now() # 更新活跃时间
         message = data.event.message
@@ -182,7 +204,7 @@ class FeishuInteraction:
         for elem in elements:
             if elem.get("tag") == "div" and "lark_md" in elem.get("text", {}):
                 text = elem["text"]["lark_md"]["content"]
-                comp_pattern = r'(\{[\s\n]*"tag"[\s\n]*:[\s\n]*"(table|column_set|div|tag)"[\s\n]*,.*?\})'
+                comp_pattern = r'(\{[\s\n]*"tag"[\s\n]*:[\s\n]*"(table|column_set|div|tag|img)"[\s\n]*,.*?\})'
                 matches = list(re.finditer(comp_pattern, text, re.DOTALL))
                 if matches:
                     last_pos = 0
