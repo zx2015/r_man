@@ -120,6 +120,24 @@ class FeishuInteraction:
             logger.error(f"Exception during image upload: {e}")
             return None
 
+    async def download_image(self, image_key: str) -> Optional[bytes]:
+        """从飞书下载图片并返回二进制流"""
+        from lark_oapi.api.im.v1 import GetImageRequest
+        try:
+            request = GetImageRequest.builder() \
+                .image_key(image_key) \
+                .build()
+            
+            response = await self.loop.run_in_executor(None, self.client.im.v1.image.get, request)
+            if response.success():
+                return response.file.read()
+            else:
+                logger.error(f"Failed to download image: {response.code}, {response.msg}")
+                return None
+        except Exception as e:
+            logger.error(f"Exception during image download: {e}")
+            return None
+
     def _on_message_received(self, data: P2ImMessageReceiveV1) -> None:
         self.last_active_time = datetime.now() # 更新活跃时间
         message = data.event.message

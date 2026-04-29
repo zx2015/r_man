@@ -21,6 +21,9 @@
 | v1.16.0 | 2026-04-21 | 引入 LLM Fallback（故障转移）机制，支持配置多级备选模型以应对 429/529 等服务异常 | Gemini CLI |
 | v1.17.0 | 2026-04-21 | 细化技能系统需求：支持 Frontmatter 解析、初始化扫描快照及 XML 结构化 Prompt 注入 | Gemini CLI |
 | v1.18.0 | 2026-04-21 | 新增 session_search 工具，利用 SQLite FTS5 实现高效的全局跨会话全文历史搜索 | Gemini CLI |
+| v1.19.0 | 2026-04-28 | 扩展技能系统扫描路径：支持项目根目录 skills/ 与家目录 ~/.agents/skills/ | Gemini CLI |
+| v1.20.0 | 2026-04-28 | 引入图片支持：新增 upload_image 工具并支持在飞书卡片中渲染 img 组件 | Gemini CLI |
+| v1.21.0 | 2026-04-29 | 新增 download_image 工具，支持将飞书资源下载至本地服务器 | Gemini CLI |
 
 ---
 
@@ -200,6 +203,8 @@ r-man 仅维护一个飞书 Agent 会话（Session），作为唯一的用户交
 | `memory_dump` | 保存当前对话内存 | `tag: str?`, `description: str?` | 内存 ID 或 错误信息 |
 | `memory_get` | 获取保存的内存 | `memory_id: str?`, `tag: str?`, `query: str?`, `limit: int?` | 内存内容或 错误信息 |
 | `session_search` | 全文搜索历史会话关键词，实现跨会话全局检索 | `query: str`, `limit: int?` | 历史消息片段及 SessionID 列表 |
+| `upload_image` | 上传本地图片到飞书服务器，获取用于展示的 image_key | `path: str` | 包含 image_key 的 JSON 字符串或错误信息 |
+| `download_image` | 将飞书图片资源下载至本地服务器 | `image_key: str`, `file_name: str?` | 成功提示（含本地路径）或 错误信息 |
 
 #### 工具详细说明
 
@@ -261,6 +266,13 @@ r-man 仅维护一个飞书 Agent 会话（Session），作为唯一的用户交
 - `limit`：返回最相关的结果数量。
 - **全局检索能力**：该工具提供无边界的跨会话搜索，Agent 能够通过关键词精准定位所有历史对话背景，辅助决策。
 - 返回内容包含：关键词周围的文本片段（Snippet）、所属角色、Session ID 以及记录时间。
+
+**`download_image`** — 图片资源下载
+- 提供一种机制，允许 Agent 通过飞书的 `image_key` 将存储在飞书云端的图片资源抓取回本地文件系统。
+- `image_key`：飞书图片的唯一标识符（如 `img_v3_...`）。
+- `file_name`（可选）：下载后的本地文件名。如果不提供，系统将自动生成一个基于时间戳的随机名称。
+- **存储路径**：强制下载到 `workspace/downloads/` 目录。
+- 输出结果：成功后返回下载后的绝对路径。
 
 #### 安全约束
 
@@ -421,7 +433,10 @@ llm:
 **描述**: 提供一套专家级的指令注入机制，使 Agent 能够动态获得特定领域的 SOP 指导。
 
 #### 9.1 技能定义规范
-- **存储路径**: `rman/skills/{skill_id}/SKILL.md`。
+- **扫描路径**:
+    1.  项目根目录下的 `skills/**` (用于随代码分发的内置/通用技能)。
+    2.  用户家目录下的 `~/.agents/skills/` (用于用户本地持久化的私有技能)。
+- **存储结构**: 每个技能对应一个独立文件夹，包含 `SKILL.md`。
 - **文件格式**:
     - **Frontmatter**: 必须位于文件顶部，由 `---` 包裹的 YAML 块，包含 `name` 和 `description`。
     - **Body**: 紧随第二个 `---` 之后的 Markdown 内容，定义具体的技能逻辑。
