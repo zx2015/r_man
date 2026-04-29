@@ -1,6 +1,9 @@
 import asyncio
 import json
-from typing import Optional, List, Dict
+import os
+import socket
+import re
+from typing import Optional, List, Dict, Any
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
     P2ImMessageReceiveV1, 
@@ -12,7 +15,6 @@ from rman.common.config import config
 from rman.interaction.queue import task_queue
 from loguru import logger
 from datetime import datetime
-import socket
 
 class FeishuInteraction:
     def __init__(self):
@@ -124,15 +126,16 @@ class FeishuInteraction:
         sender_id = data.event.sender.sender_id.open_id
         chat_id = message.chat_id
         
-        # 鉴权
-        is_allowed = (not self.allowed_user or self.allowed_user == "*" or sender_id == self.allowed_user)
-        if not is_allowed:
-            logger.warning(f"Unauthorized message from user: {sender_id}. Ignored.")
+        # 仅处理文本消息且来自授权用户
+        if message.message_type != "text":
             return
-            
-        content_raw = json.loads(message.content)
-        text = content_raw.get("text", "").strip()
-        logger.info(f"Received message from [UserID: {sender_id}, ChatID: {chat_id}]: {text}")
+        
+        if self.allowed_user != "*" and sender_id != self.allowed_user:
+            logger.warning(f"Message from unauthorized user: {sender_id}. Dropping.")
+            return
+
+        text_json = json.loads(message.content)
+        text = text_json.get("text", "").strip()
         
         # 1. 发送“思考中”卡片
         self.loop.call_soon_threadsafe(
@@ -141,7 +144,6 @@ class FeishuInteraction:
                 "🤖 R-MAN 正在思考中...",
                 f"正在处理用户消息: `{text}`",
                 template="blue"
-
             ))
         )
         
@@ -199,28 +201,55 @@ class FeishuInteraction:
         elif content_md.startswith("❌"): inferred_template = "red"
         elif content_md.startswith("⚠️"): inferred_template = "orange"
         
-        # 2. 调用增强版渲染 Pipeline
+        # 2. 调用增强版渲染 Pipeline (分离 Markdown 与 表格)
         elements = CardFormatter.format_with_components(content_md)
         
-        # 3. 注入 手动嵌入 JSON 组件的识别
+        # 3. 增强：提取文本中手动嵌入的 JSON 组件 (如 img, column_set)
         final_elements = []
-        import re
         for elem in elements:
             if elem.get("tag") == "div" and "lark_md" in elem.get("text", {}):
                 text = elem["text"]["lark_md"]["content"]
-                comp_pattern = r'(\{[\s\n]*"tag"[\s\n]*:[\s\n]*"(table|column_set|div|tag|img)"[\s\n]*,.*?\})'
+                # 更加健壮的正则：支持识别嵌入在文本中的 JSON 片段，兼容转义字符和换行
+                comp_pattern = r'(?:```json\s*)?(\{[\s\n]*[\'"]tag[\'"][\s\n]*:[\s\n]*[\'"](?:table|column_set|div|tag|img)[\'"].*?\})(?:\s*```)?'
+                
                 matches = list(re.finditer(comp_pattern, text, re.DOTALL))
                 if matches:
                     last_pos = 0
                     for match in matches:
-                        if text[last_pos:match.start()].strip():
-                            final_elements.append({"tag": "div", "text": {"tag": "lark_md", "content": text[last_pos:match.start()].strip()}})
+                        # 1. 提取并清洗 JSON 字符串
+                        raw_json = match.group(1)
+                        # 处理常见的 Agent 输出转义问题（如 \" -> "）
+                        clean_json = raw_json.replace('\\"', '"').replace("\\'", "'")
+                        
+                        # 处理组件前的普通文本
+                        before_text = text[last_pos:match.start()].strip()
+                        if before_text:
+                            final_elements.append({"tag": "div", "text": {"tag": "lark_md", "content": before_text}})
+                        
                         try:
-                            final_elements.append(json.loads(match.group(1)))
-                        except: pass
+                            # 预处理：将单引号替换为双引号以满足 json.loads
+                            json_str = clean_json.replace("'", '"')
+                            comp_data = json.loads(json_str)
+                            
+                            # 针对 img 标签进行标准化补全
+                            if comp_data.get("tag") == "img":
+                                if "alt" not in comp_data:
+                                    comp_data["alt"] = {"tag": "plain_text", "content": "R-MAN Image"}
+                                if "mode" not in comp_data:
+                                    comp_data["mode"] = "fit_horizontal"
+                            
+                            final_elements.append(comp_data)
+                        except Exception as e:
+                            logger.warning(f"Failed to parse embedded JSON component: {e} | JSON: {json_str}")
+                            # 失败则回退为文本展示，防止丢失信息
+                            final_elements.append({"tag": "div", "text": {"tag": "lark_md", "content": match.group(0)}})
+                        
                         last_pos = match.end()
-                    if text[last_pos:].strip():
-                        final_elements.append({"tag": "div", "text": {"tag": "lark_md", "content": text[last_pos:].strip()}})
+                    
+                    # 处理残留文本
+                    after_text = text[last_pos:].strip()
+                    if after_text:
+                        final_elements.append({"tag": "div", "text": {"tag": "lark_md", "content": after_text}})
                 else:
                     final_elements.append(elem)
             else:
@@ -278,7 +307,7 @@ class FeishuInteraction:
                 .build()) \
             .build()
             
-        # 5. 执行发送（带重试机制）
+        # 执行发送（带重试机制）
         for attempt in range(3):
             try:
                 response = await self.loop.run_in_executor(None, self.client.im.v1.message.create, request)
