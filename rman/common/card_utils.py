@@ -21,67 +21,90 @@ class CardFormatter:
         # 1. 执行文本级优化
         processed = cls._optimize_markdown_style(text)
         
-        # 2. 识别并转换表格 (使用常量上限)
+        # 2. 识别并转换表格、标题及嵌入的 JSON 组件
         elements = cls._convert_tables_to_components(processed)
         
         return elements
 
     @classmethod
     def _convert_tables_to_components(cls, text: str) -> list:
-        """识别 Markdown 表格及标题，并将其转为飞书原生组件"""
+        """识别 Markdown 表格、标题及嵌入的 JSON 组件，并将其转为飞书原生组件"""
         elements = []
-        # 1. 识别标题行并赋予 heading 样式
-        # 匹配以 # 开头的行，支持 1-6 级
-        header_pattern = r'(^#{1,6}\s+.*)'
+        
+        # 1. 识别嵌入的 JSON 组件 (如 img, column_set, table)
+        comp_pattern = r'(?:```json\s*)?(\{[\s\n]*["\']tag[\'"][\s\n]*:[\s\n]*["\'](?:table|column_set|div|tag|img)["\'].*?\})(?:\s*```)?'
         
         # 2. 识别表格
         table_pattern = r'(\n(?:\|.*\|(?:\n|$)){2,})'
         
-        # 混合解析：先处理表格，再在剩余文本中处理标题
-        parts = re.split(table_pattern, text)
-        table_count = 0
+        # 3. 识别标题行
+        header_pattern = r'(^#{1,6}\s+.*)'
 
+        # 核心逻辑：先按 JSON 组件进行切分
+        parts = re.split(comp_pattern, text, flags=re.DOTALL)
         for part in parts:
-            if re.match(table_pattern, part) and table_count < FEISHU_CARD_TABLE_LIMIT:
-                table_count += 1
-                try:
-                    table_comp = cls._parse_markdown_table(part)
-                    if table_comp:
-                        elements.append(table_comp)
-                        continue
-                except Exception as e:
-                    logger.error(f"Failed to convert table: {e}")
+            if not part or not part.strip(): continue
             
-            if not part.strip(): continue
+            # 如果这部分本身就是 JSON 组件
+            clean_part = part.strip()
+            if re.match(r'^\{[\s\n]*["\']tag["\']', clean_part):
+                try:
+                    # 清洗转义字符并解析
+                    json_str = clean_part.replace('\\"', '"').replace("\\'", "'").replace("'", '"')
+                    comp_data = json.loads(json_str)
+                    
+                    # 针对 img 标签进行标准化补全
+                    if comp_data.get("tag") == "img":
+                        if "alt" not in comp_data:
+                            comp_data["alt"] = {"tag": "plain_text", "content": "R-MAN Image"}
+                        if "mode" not in comp_data:
+                            comp_data["mode"] = "fit_horizontal"
+                    
+                    elements.append(comp_data)
+                    continue
+                except Exception as e:
+                    logger.warning(f"Failed to parse inner JSON component: {e}")
 
-            # 处理段落中的标题
-            sub_parts = re.split(header_pattern, part, flags=re.MULTILINE)
+            # 处理非组件文本：继续处理表格和标题
+            sub_parts = re.split(table_pattern, part)
+            table_count = 0
             for sub_part in sub_parts:
-                if not sub_part.strip(): continue
+                if re.match(table_pattern, sub_part) and table_count < FEISHU_CARD_TABLE_LIMIT:
+                    table_count += 1
+                    try:
+                        table_comp = cls._parse_markdown_table(sub_part)
+                        if table_comp:
+                            elements.append(table_comp)
+                            continue
+                    except: pass
                 
-                header_match = re.match(r'^(#{1,6})\s+(.*)', sub_part)
-                if header_match:
-                    level = len(header_match.group(1))
-                    title_text = header_match.group(2).strip()
-                    # 映射规则微调：实现 16px, 15px(近似), 14px 视觉效果
-                    # 1-2级 -> heading-4 (16px)
-                    # 3级   -> heading (16px)
-                    # 4-6级 -> normal (14px)
-                    size_map = {
-                        1: "heading-4", 2: "heading-4", # 16px
-                        3: "heading",                  # 16px (飞书最接近 15px 的档位)
-                        4: "normal", 5: "normal", 6: "normal" # 14px
-                    }
-                    elements.append({
-                        "tag": "div",
-                        "text": {
-                            "tag": "lark_md",
-                            "content": f"**{title_text}**",
-                            "text_size": size_map.get(level, "heading")
+                if not sub_part.strip(): continue
+
+                # 处理标题
+                text_parts = re.split(header_pattern, sub_part, flags=re.MULTILINE)
+                for tp in text_parts:
+                    if not tp.strip(): continue
+                    
+                    header_match = re.match(r'^(#{1,6})\s+(.*)', tp)
+                    if header_match:
+                        level = len(header_match.group(1))
+                        title_text = header_match.group(2).strip()
+                        # 映射规则：实现 18px, 16px, 14px 视觉效果
+                        size_map = {
+                            1: "heading-3", 2: "heading-3", 
+                            3: "heading-4", 
+                            4: "normal", 5: "normal", 6: "normal"
                         }
-                    })
-                else:
-                    elements.append({"tag": "div", "text": {"tag": "lark_md", "content": sub_part.strip()}})
+                        elements.append({
+                            "tag": "div",
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**{title_text}**",
+                                "text_size": size_map.get(level, "heading")
+                            }
+                        })
+                    else:
+                        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": tp.strip()}})
         
         return elements
 
@@ -114,13 +137,12 @@ class CardFormatter:
         col_names = []
         for i, cell in enumerate(header_cells):
             name = f"col_{i}"
-            # 计算权重比例：最小 5%，防止过窄
             weight = max(5, int((max_lengths[i] / total_len) * 100))
             columns.append({
                 "name": name, 
                 "display_name": cell, 
                 "data_type": "markdown",
-                "width": f"{weight}%" # 使用百分比权重
+                "width": f"{weight}%"
             })
             col_names.append(name)
 
@@ -136,7 +158,7 @@ class CardFormatter:
         return {
             "tag": "table",
             "page_size": 10,
-            "row_height": "middle",    # 使用中等行高 (40px)，兼顾美观与稳定性
+            "row_height": "middle",
             "header_style": {"background_style": "grey", "bold": True},
             "columns": columns,
             "rows": formatted_rows
@@ -154,7 +176,6 @@ class CardFormatter:
 
     @classmethod
     def format(cls, text: str) -> str:
-        """[降级接口] 仅执行文本预算处理。"""
         if not text: return ""
         processed = cls._sanitize_table_budget(text)
         processed = cls._optimize_markdown_style(processed)
@@ -162,7 +183,6 @@ class CardFormatter:
 
     @classmethod
     def _sanitize_table_budget(cls, text: str) -> str:
-        """表格数量预检查及强制降级逻辑"""
         table_pattern = r'((?:\|.*\|(?:\n|$)){2,})'
         tables = re.findall(table_pattern, text)
         

@@ -201,59 +201,10 @@ class FeishuInteraction:
         elif content_md.startswith("❌"): inferred_template = "red"
         elif content_md.startswith("⚠️"): inferred_template = "orange"
         
-        # 2. 调用增强版渲染 Pipeline (分离 Markdown 与 表格)
-        elements = CardFormatter.format_with_components(content_md)
+        # 2. 调用增强版渲染 Pipeline (分离 Markdown / 表格 / 嵌入组件)
+        final_elements = CardFormatter.format_with_components(content_md)
         
-        # 3. 增强：提取文本中手动嵌入的 JSON 组件 (如 img, column_set)
-        final_elements = []
-        for elem in elements:
-            if elem.get("tag") == "div" and "lark_md" in elem.get("text", {}):
-                text = elem["text"]["lark_md"]["content"]
-                
-                # 预清洗：消除 Agent 可能产生的过度转义（如 \" -> "）
-                text = text.replace('\\"', '"').replace("\\'", "'")
-                
-                # 健壮正则：匹配嵌入的 JSON 块
-                comp_pattern = r'(?:```json\s*)?(\{[\s\n]*"tag"[\s\n]*:[\s\n]*"(?:table|column_set|div|tag|img)".*?\})(?:\s*```)?'
-                
-                matches = list(re.finditer(comp_pattern, text, re.DOTALL))
-                if matches:
-                    last_pos = 0
-                    for match in matches:
-                        # 处理组件前的普通文本
-                        before_text = text[last_pos:match.start()].strip()
-                        if before_text:
-                            final_elements.append({"tag": "div", "text": {"tag": "lark_md", "content": before_text}})
-                        
-                        try:
-                            # 再次清洗单个片段
-                            json_str = match.group(1).strip()
-                            comp_data = json.loads(json_str)
-                            
-                            # img 标签标准化
-                            if comp_data.get("tag") == "img":
-                                if "alt" not in comp_data:
-                                    comp_data["alt"] = {"tag": "plain_text", "content": "R-MAN Image"}
-                                if "mode" not in comp_data:
-                                    comp_data["mode"] = "fit_horizontal"
-                            
-                            final_elements.append(comp_data)
-                        except Exception as e:
-                            logger.warning(f"Failed to parse embedded JSON: {e}")
-                            final_elements.append({"tag": "div", "text": {"tag": "lark_md", "content": match.group(0)}})
-                        
-                        last_pos = match.end()
-                    
-                    # 处理残留文本
-                    after_text = text[last_pos:].strip()
-                    if after_text:
-                        final_elements.append({"tag": "div", "text": {"tag": "lark_md", "content": after_text}})
-                else:
-                    final_elements.append({"tag": "div", "text": {"tag": "lark_md", "content": text}})
-            else:
-                final_elements.append(elem)
-
-        # 4. 如果提供了 usage，增加分栏展示
+        # 3. 如果提供了 usage，增加分栏展示
         if usage:
             final_elements.append({"tag": "hr"})
             final_elements.append({
