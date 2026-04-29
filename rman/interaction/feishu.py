@@ -97,10 +97,14 @@ class FeishuInteraction:
         from lark_oapi.api.im.v1 import CreateImageRequest, CreateImageRequestBody
         import io
         try:
+            img_io = io.BytesIO(image_bytes)
+            # 关键：手动注入 name 属性，帮助 SDK 识别格式并封装 Multipart
+            img_io.name = "upload.png" 
+            
             request = CreateImageRequest.builder() \
                 .request_body(CreateImageRequestBody.builder() \
                     .image_type("message") \
-                    .image(io.BytesIO(image_bytes)) \
+                    .image(img_io) \
                     .build()) \
                 .build()
             
