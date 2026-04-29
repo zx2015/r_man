@@ -209,29 +209,28 @@ class FeishuInteraction:
         for elem in elements:
             if elem.get("tag") == "div" and "lark_md" in elem.get("text", {}):
                 text = elem["text"]["lark_md"]["content"]
-                # 更加健壮的正则：支持识别嵌入在文本中的 JSON 片段，兼容转义字符和换行
-                comp_pattern = r'(?:```json\s*)?(\{[\s\n]*[\'"]tag[\'"][\s\n]*:[\s\n]*[\'"](?:table|column_set|div|tag|img)[\'"].*?\})(?:\s*```)?'
+                
+                # 预清洗：消除 Agent 可能产生的过度转义（如 \" -> "）
+                text = text.replace('\\"', '"').replace("\\'", "'")
+                
+                # 健壮正则：匹配嵌入的 JSON 块
+                comp_pattern = r'(?:```json\s*)?(\{[\s\n]*"tag"[\s\n]*:[\s\n]*"(?:table|column_set|div|tag|img)".*?\})(?:\s*```)?'
                 
                 matches = list(re.finditer(comp_pattern, text, re.DOTALL))
                 if matches:
                     last_pos = 0
                     for match in matches:
-                        # 1. 提取并清洗 JSON 字符串
-                        raw_json = match.group(1)
-                        # 处理常见的 Agent 输出转义问题（如 \" -> "）
-                        clean_json = raw_json.replace('\\"', '"').replace("\\'", "'")
-                        
                         # 处理组件前的普通文本
                         before_text = text[last_pos:match.start()].strip()
                         if before_text:
                             final_elements.append({"tag": "div", "text": {"tag": "lark_md", "content": before_text}})
                         
                         try:
-                            # 预处理：将单引号替换为双引号以满足 json.loads
-                            json_str = clean_json.replace("'", '"')
+                            # 再次清洗单个片段
+                            json_str = match.group(1).strip()
                             comp_data = json.loads(json_str)
                             
-                            # 针对 img 标签进行标准化补全
+                            # img 标签标准化
                             if comp_data.get("tag") == "img":
                                 if "alt" not in comp_data:
                                     comp_data["alt"] = {"tag": "plain_text", "content": "R-MAN Image"}
@@ -240,8 +239,7 @@ class FeishuInteraction:
                             
                             final_elements.append(comp_data)
                         except Exception as e:
-                            logger.warning(f"Failed to parse embedded JSON component: {e} | JSON: {json_str}")
-                            # 失败则回退为文本展示，防止丢失信息
+                            logger.warning(f"Failed to parse embedded JSON: {e}")
                             final_elements.append({"tag": "div", "text": {"tag": "lark_md", "content": match.group(0)}})
                         
                         last_pos = match.end()
@@ -251,7 +249,7 @@ class FeishuInteraction:
                     if after_text:
                         final_elements.append({"tag": "div", "text": {"tag": "lark_md", "content": after_text}})
                 else:
-                    final_elements.append(elem)
+                    final_elements.append({"tag": "div", "text": {"tag": "lark_md", "content": text}})
             else:
                 final_elements.append(elem)
 
