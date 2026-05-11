@@ -3,23 +3,28 @@
 | 版本号 | 日期 | 变更说明 | 作者 |
 | :--- | :--- | :--- | :--- |
 | v1.0.0 | 2026-04-16 | 初始版本，定义组装算法与内容模板 | Gemini CLI |
+| v1.1.0 | 2026-05-07 | 优化编排序列：遵循“静态前置、动态后置”原则，提升缓存效率与环境敏感度 | Gemini CLI |
 
 ## 1. 核心类逻辑：`PromptBuilder`
 
 `PromptBuilder` 采用“插槽化（Slot-based）”组装模式。
 
 ### 1.1 组装序列 (Slot Pipeline)
+为了最大化 LLM 的提示词缓存（Prompt Cache）效率，并利用近期偏见（Recency Bias）增强环境感知，插槽按**“变动频率从低到高”**的顺序排列：
+
 ```mermaid
 flowchart TD
-    Start[开始组装] --> Pipeline[执行插槽流水线]
-    Pipeline --> Identity[Identity Slot]
-    Pipeline --> Datetime[Datetime Slot]
-    Pipeline --> Environment[Environment Slot]
-    Pipeline --> ToolsSkills[Tools & Skills Slots]
-    Pipeline --> SafetyStandards[Safety & Standards Slots]
-    Pipeline --> Guidelines[Guidelines Slot]
-    Identity & Datetime & Environment & ToolsSkills & SafetyStandards & Guidelines --> Assemble[拼接 Slot 内容]
-    Assemble --> Output[产出完整 System Prompt]
+    Start[开始组装] --> S1[Workflow: 协议层]
+    S1 --> S2[Standards: 规范层]
+    S2 --> S3[Safety: 安全层]
+    S3 --> S4[Identity: 角色层]
+    S4 --> S5[Tools: 工具层]
+    S5 --> S6[Skills: 技能层]
+    S6 --> S7[Custom: 用户指令层]
+    S7 --> S8[Environment: 运行环境层]
+    S8 --> S9[Datetime: 时空锚点层]
+    S9 --> Assemble[最终缝合]
+    Assemble --> Output[产出 System Prompt]
 ```
 
 ## 2. 插槽详细定义 (Slot Definitions)

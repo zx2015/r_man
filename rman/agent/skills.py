@@ -16,29 +16,34 @@ class SkillManager:
     """技能管理器：负责扫描、解析与内存快照维护"""
     def __init__(self):
         self.skills_snapshot: List[SkillDefinition] = []
-        # 寻找 rman/skills 目录
-        self.skills_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "skills"))
+        # 定义多个扫描路径
+        # 1. 项目根目录下的 skills/ (内置/分发技能)
+        # 2. 用户家目录下的 ~/.agents/skills/ (本地持久化技能)
+        self.search_paths = [
+            os.path.abspath("skills"),
+            os.path.expanduser("~/.agents/skills")
+        ]
         # 正则逻辑：匹配 Frontmatter (YAML) 和 Body
         self.parse_pattern = re.compile(r'^---([\s\S]*?)---(?:\r?\n([\s\S]*))?', re.MULTILINE)
 
     def scan_skills(self):
         """服务初始化时触发的扫描逻辑"""
-        if not os.path.exists(self.skills_dir):
-            os.makedirs(self.skills_dir, exist_ok=True)
-            logger.info(f"Created skills directory at {self.skills_dir}")
-            return
-
         new_snapshot = []
-        logger.info(f"Scanning directory {self.skills_dir} for skills...")
+        
+        for skills_dir in self.search_paths:
+            if not os.path.exists(skills_dir):
+                continue
 
-        # 遍历子目录寻找 SKILL.md
-        for root, dirs, files in os.walk(self.skills_dir):
-            if "SKILL.md" in files:
-                file_path = os.path.join(root, "SKILL.md")
-                skill = self._parse_skill_file(file_path)
-                if skill:
-                    new_snapshot.append(skill)
-                    logger.success(f"Loaded skill: {skill.name}")
+            logger.info(f"Scanning directory {skills_dir} for skills...")
+
+            # 遍历子目录寻找 SKILL.md
+            for root, dirs, files in os.walk(skills_dir):
+                if "SKILL.md" in files:
+                    file_path = os.path.join(root, "SKILL.md")
+                    skill = self._parse_skill_file(file_path)
+                    if skill:
+                        new_snapshot.append(skill)
+                        logger.success(f"Loaded skill: {skill.name} from {skills_dir}")
 
         self.skills_snapshot = new_snapshot
         logger.info(f"Skill scanning completed. {len(self.skills_snapshot)} skills loaded.")

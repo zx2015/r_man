@@ -18,17 +18,17 @@ class PromptBuilder:
         self.workspace_dir = raw_workspace.replace("@", "") if raw_workspace.startswith("@") else raw_workspace
         self.abs_workspace = os.path.abspath(self.workspace_dir)
         
-        # 定义插槽流水线执行顺序
+        # 定义插槽流水线执行顺序 (静态前置，动态后置)
         self.slot_pipeline = [
-            "identity",
-            "datetime",
-            "environment",
-            "workflow",
-            "tools",
-            "skills",
-            "safety",
-            "standards",
-            "custom_files"
+            "workflow",      # 1. 协议层 (最稳定)
+            "standards",     # 2. 规范层
+            "safety",        # 3. 安全层
+            "identity",      # 4. 角色层
+            "tools",         # 5. 工具层
+            "skills",        # 6. 技能层
+            "custom_files",  # 7. 用户指令层 (较易变)
+            "environment",   # 8. 运行环境层 (动态)
+            "datetime"       # 9. 时空锚点层 (极动态)
         ]
         
         os.makedirs(self.template_dir, exist_ok=True)

@@ -11,7 +11,11 @@
 ## 2. 详细设计
 
 ### 2.1 技能文件规范 (SKILL.md)
-每个技能必须存放在 `rman/skills/{id}/SKILL.md`，格式如下：
+系统会并行扫描以下路径：
+1.  **项目内置**: `skills/{id}/SKILL.md`
+2.  **本地持久化**: `~/.agents/skills/{id}/SKILL.md`
+
+格式如下：
 ```markdown
 ---
 name: skill-name

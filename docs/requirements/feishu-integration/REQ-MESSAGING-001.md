@@ -7,6 +7,7 @@
 | v1.2.0 | 2026-04-27 | 调整卡片注脚文案：从 Intelligence Service 切换为 Hostname 识别 | Gemini CLI |
 | v1.2.1 | 2026-04-27 | 精简状态展示：Model 与 Tokens 切换为单行极简样式 | Gemini CLI |
 | v1.2.2 | 2026-04-27 | 优化中间反馈：长指令与多行指令强制使用代码块展示，解决截断问题 | Gemini CLI |
+| v1.3.0 | 2026-04-28 | 引入图片渲染能力：支持 img 标签解析与 image_key 展示 | Gemini CLI |
 
 ## 1. 业务目标
 为了提升用户反馈的直观性并提供透明的资源消耗监控，R-MAN 必须采用飞书交互式卡片作为标准通讯格式。
@@ -20,6 +21,7 @@
     - 关键结果使用 `column_set` 进行分栏展示。
     - 长文本使用支持 Markdown 子集的 `div` 模块。
 - **Table Support**: 当需要展示结构化列表（如进程清单、文件属性）时，在 Prompt 中引导模型产出符合卡片 2.0 规范的 `table` 标签结构。
+- **Image Support**: 支持解析 `img` 标签组件，允许 Agent 通过 `upload_image` 工具获取 Key 后，在回复中内联渲染图片。
 - **Status Bar**: 使用 `column_set` 实现左右对称布局，强制采用单行极简样式：
     - 左侧: `🏷 [ModelName]`
     - 右侧: `📊 Tokens In: [InCount] / Out: [OutCount]`
