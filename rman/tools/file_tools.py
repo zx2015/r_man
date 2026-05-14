@@ -40,9 +40,11 @@ class ReadFileTool(BaseTool):
             return f"Error: 读取失败 - {str(e)}"
 
 def is_path_writable(target_path: str, workspace: str) -> bool:
-    """检查路径是否允许写入 (workspace 或 /tmp)"""
-    target = os.path.abspath(target_path)
-    allowed_dirs = [os.path.abspath(workspace), "/tmp"]
+    """检查路径是否允许写入 (workspace 或 /tmp)。
+    使用 realpath 解析软链，防止 workspace 内的恶意软链指向系统文件。
+    """
+    target = os.path.realpath(target_path)
+    allowed_dirs = [os.path.realpath(workspace), os.path.realpath("/tmp")]
     return any(target.startswith(d) for d in allowed_dirs)
 
 class WriteFileParams(BaseModel):
@@ -56,8 +58,8 @@ class WriteFileTool(BaseTool):
 
     @audit_log
     async def execute(self, path: str, content: str, **kwargs) -> str: # type: ignore[override]
-        workspace = os.path.abspath(config.agent.workspace_dir.replace("@", ""))
-        target_path = os.path.abspath(os.path.join(workspace, path))
+        workspace = os.path.realpath(config.agent.workspace_dir.replace("@", ""))
+        target_path = os.path.realpath(os.path.join(workspace, path))
 
         # 路径校验：允许 workspace 或 /tmp
         if not is_path_writable(target_path, workspace):
@@ -87,8 +89,8 @@ class ReplaceTool(BaseTool):
 
     @audit_log
     async def execute(self, file_path: str, old_string: str, new_string: str, instruction: str, allow_multiple: bool = False, **kwargs) -> str: # type: ignore[override]
-        workspace = os.path.abspath(config.agent.workspace_dir.replace("@", ""))
-        target_path = os.path.abspath(os.path.join(workspace, file_path))
+        workspace = os.path.realpath(config.agent.workspace_dir.replace("@", ""))
+        target_path = os.path.realpath(os.path.join(workspace, file_path))
 
         # 路径校验：允许 workspace 或 /tmp
         if not is_path_writable(target_path, workspace):
