@@ -16,6 +16,10 @@ from rman.interaction.queue import task_queue
 from loguru import logger
 from datetime import datetime
 
+# 飞书卡片 JSON 大小限制（官方文档：卡片消息请求体最大 30 KB）
+_CARD_CONTENT_SOFT_LIMIT = 18 * 1024   # content_md 软上限（字节），超过时预截断
+_CARD_JSON_HARD_LIMIT = 28 * 1024       # 卡片 JSON 硬上限（字节），留 2 KB 缓冲
+
 class FeishuInteraction:
     def __init__(self):
         self.app_id = config.feishu.app_id
@@ -152,9 +156,13 @@ class FeishuInteraction:
             logger.warning(f"Message from unauthorized user: {sender_id}. Dropping.")
             return
 
-        text_json = json.loads(message.content)
-        text = text_json.get("text", "").strip()
-        
+        try:
+            text_json = json.loads(message.content)
+            text = text_json.get("text", "").strip()
+        except (json.JSONDecodeError, AttributeError) as e:
+            logger.warning(f"Failed to parse message content as JSON: {e!r}, raw: {str(message.content)[:200]!r}")
+            return
+
         # 1. 发送“思考中”卡片
         self.loop.call_soon_threadsafe(
             lambda: asyncio.create_task(self._send_card(
@@ -213,6 +221,16 @@ class FeishuInteraction:
         from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
         from rman.common.card_utils import CardFormatter
         
+        # 0. 预截断 content_md（软上限保护，防止卡片 JSON 超出飞书 30 KB 限制）
+        #    注意：json.dumps 默认使用 unicode 转义，每个 CJK 字符占 6 字节而非 3 字节，
+        #    因此用 UTF-8 字节数评估软上限时需留足余量。
+        content_bytes = content_md.encode("utf-8")
+        if len(content_bytes) > _CARD_CONTENT_SOFT_LIMIT:
+            # 截断到软上限，并附加截断提示
+            truncated_raw = content_bytes[: _CARD_CONTENT_SOFT_LIMIT - 100].decode("utf-8", errors="replace")
+            content_md = truncated_raw + "\n\n> ⚠️ 内容较长，已截断显示。完整内容请查看服务器日志。"
+            logger.warning(f"content_md truncated: {len(content_bytes)} bytes -> ~{_CARD_CONTENT_SOFT_LIMIT} bytes")
+
         # 1. 自动 Header 颜色推断
         inferred_template = template
         if content_md.startswith("✅"): inferred_template = "green"
@@ -246,7 +264,7 @@ class FeishuInteraction:
                 ]
             })
 
-        # 5. 注脚
+        # 4. 注脚
         curr_time = datetime.now().strftime('%H:%M:%S')
         final_elements.append({
             "tag": "note",
@@ -265,12 +283,26 @@ class FeishuInteraction:
             "elements": final_elements
         }
 
+        # 5. 硬限制兜底：构建后仍超限则降级为极简纯文本卡片（极端场景）
+        card_str = json.dumps(card_json, ensure_ascii=False)
+        if len(card_str.encode("utf-8")) > _CARD_JSON_HARD_LIMIT:
+            logger.error(
+                f"Card JSON size {len(card_str.encode('utf-8'))} bytes exceeds hard limit "
+                f"{_CARD_JSON_HARD_LIMIT} bytes. Falling back to plain text card."
+            )
+            fallback_content = content_md[:1000] + "\n\n> ⚠️ [内容已严重截断，请查看服务器日志]"
+            card_json["elements"] = [
+                {"tag": "div", "text": {"tag": "lark_md", "content": fallback_content}},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"⏱ {curr_time} | R-MAN | {self.hostname}"}]},
+            ]
+            card_str = json.dumps(card_json, ensure_ascii=False)
+
         request = CreateMessageRequest.builder() \
             .receive_id_type("chat_id") \
             .request_body(CreateMessageRequestBody.builder() \
                 .receive_id(chat_id) \
                 .msg_type("interactive") \
-                .content(json.dumps(card_json)) \
+                .content(card_str) \
                 .build()) \
             .build()
             
@@ -290,6 +322,7 @@ class FeishuInteraction:
                 await asyncio.sleep(2)
 
         logger.critical(f"Failed to send card after all attempts.")
+
 
 # 单例
 feishu_handler = FeishuInteraction()
