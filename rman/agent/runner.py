@@ -47,6 +47,8 @@ class AgentRunner:
 
         final_response = ""
         total_usage = {"input": 0, "output": 0, "model": config.llm.model}
+        consecutive_empty = 0       # 连续无有效输出（无 Action、无 final）的轮次计数
+        last_tool_name: Optional[str] = None  # 上一次成功执行的工具名，用于增强引导词
 
         for i in range(self.max_iterations):
             # --- 自动窗口压缩 (80/60 准则) ---
@@ -97,8 +99,10 @@ class AgentRunner:
 
             # 执行工具 (Observation Layer)
             if actions_to_run:
+                consecutive_empty = 0  # 有效行动，重置计数器
                 for action in actions_to_run:
                     tool_name = str(action.get("tool"))
+                    last_tool_name = tool_name  # 记录最近执行的工具名
                     params = action.get("parameters", {})
                     call_id = action.get("call_id")
                     
@@ -128,11 +132,49 @@ class AgentRunner:
                 return final, total_usage
             
             else:
-                prompt = "系统提示：请继续。如果任务已完成，请回复 <final>；如果需要工具，请调用。"
-                self.messages.append({"role": "user", "content": prompt})
-                # 此类引导消息不强制持久化，以免污染历史
+                consecutive_empty += 1
+                logger.warning(f"No action or final in iteration {i+1}. Consecutive empty: {consecutive_empty}")
 
-        return final_response or "已达到最大迭代次数。", total_usage
+                if consecutive_empty >= 3:
+                    # 第 3 次及以上：逻辑死锁，提前退出并生成进展摘要
+                    logger.error(f"Logical deadlock detected (consecutive_empty={consecutive_empty}). Triggering early exit.")
+                    progress = await self._build_progress_summary()
+                    return (
+                        f"⚠️ 任务执行遇到障碍，连续 {consecutive_empty} 轮无有效输出，已提前终止。\n\n"
+                        f"**目前进展**：\n{progress}"
+                    ), total_usage
+
+                elif consecutive_empty == 2:
+                    # 第 2 次：强制指令，要求立即给出结论或行动
+                    last_ctx = f"上一步执行了 **{last_tool_name}** 工具" if last_tool_name else "你尚未执行任何工具"
+                    prompt = (
+                        f"⚠️ 系统警告：你已连续 {consecutive_empty} 轮未输出有效内容。\n"
+                        f"当前状态：{last_ctx}。\n"
+                        f"请立即执行以下操作之一：\n"
+                        f"1. 如任务所需信息已充足，使用 <final>...</final> 给出最终结论。\n"
+                        f"2. 如需更多信息，明确调用下一个工具。\n"
+                        f"严禁继续返回空白或无意义内容。"
+                    )
+                    self.messages.append({"role": "user", "content": prompt})
+
+                else:
+                    # 第 1 次：带上下文的温和引导
+                    if last_tool_name:
+                        prompt = (
+                            f"系统提示：你已获取了 **{last_tool_name}** 的执行结果，请基于此继续推理。\n"
+                            f"如任务已完成，请使用 <final>...</final> 给出结论；如需继续操作，请调用下一个工具。"
+                        )
+                    else:
+                        prompt = "系统提示：请继续。如果任务已完成，请回复 <final>；如果需要工具，请调用。"
+                    self.messages.append({"role": "user", "content": prompt})
+
+        # 达到最大迭代次数，生成进展摘要而非裸错误信息
+        logger.warning(f"Max iterations ({self.max_iterations}) reached for session {self.session_id}.")
+        progress = await self._build_progress_summary()
+        return (
+            f"⚠️ 任务已达最大执行步数（{self.max_iterations} 轮），未能完整完成。\n\n"
+            f"**目前进展**：\n{progress}"
+        ), total_usage
 
     def _persist_message(self, role: str, content: str, name: str = None, tool_call_id: str = None, tool_calls: Any = None):
         """内部持久化逻辑，支持结构化 tool_calls"""
@@ -142,6 +184,28 @@ class AgentRunner:
             session_store.save_message, 
             self.chat_id, role, content, name, tool_call_id, tool_calls
         ))
+
+    async def _build_progress_summary(self) -> str:
+        """基于当前 messages 生成进展摘要，用于逻辑死锁或超限时的优雅降级"""
+        from rman.agent.summarizer import memory_summarizer
+        # 取最近 20 条消息（跳过 system prompt）作为摘要输入，避免信息过载
+        recent_msgs = self.messages[1:][-20:]
+        trace = json.dumps(recent_msgs, ensure_ascii=False)
+        try:
+            summary = await memory_summarizer.summarize_react_trace(
+                trace,
+                existing_summary=self._rolling_summary,
+                max_tokens=500
+            )
+            return summary
+        except Exception as e:
+            logger.error(f"Progress summary generation failed: {e}")
+            # 降级为提取最后一条 assistant/tool 消息的片段
+            for msg in reversed(self.messages):
+                if msg.get("role") in ("assistant", "tool") and msg.get("content"):
+                    snippet = str(msg["content"])[:300]
+                    return f"(摘要生成失败) 最后已知输出片段：\n{snippet}"
+            return "(无法生成进展摘要，请查看服务器日志)"
 
     async def _check_and_compress_context(self):
         """80/60 自动窗口压缩"""
