@@ -12,6 +12,7 @@ from lark_oapi.api.im.v1 import (
     ListChatRequest
 )
 from rman.common.config import config
+from rman.common.tasks import fire_and_forget
 from rman.interaction.queue import task_queue
 from loguru import logger
 from datetime import datetime
@@ -165,17 +166,22 @@ class FeishuInteraction:
 
         # 1. 发送“思考中”卡片
         self.loop.call_soon_threadsafe(
-            lambda: asyncio.create_task(self._send_card(
-                chat_id, 
-                "🤖 R-MAN 正在思考中...",
-                f"正在处理用户消息: `{text}`",
-                template="blue"
-            ))
+            lambda: fire_and_forget(
+                self._send_card(
+                    chat_id,
+                    "🤖 R-MAN 正在思考中...",
+                    f"正在处理用户消息: `{text}`",
+                    template="blue"
+                ),
+                name="send_thinking_card"
+            )
         )
         
         # 2. 提交任务
         coro = self._process_agent_task(message.message_id, text, chat_id)
-        self.loop.call_soon_threadsafe(lambda: asyncio.create_task(task_queue.add_task(coro)))
+        self.loop.call_soon_threadsafe(
+            lambda: fire_and_forget(task_queue.add_task(coro), name="queue_agent_task")
+        )
 
     async def _process_agent_task(self, message_id: str, text: str, chat_id: str):
         """调用真实的 AgentRunner 进行推理处理"""

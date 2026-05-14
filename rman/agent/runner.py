@@ -180,10 +180,14 @@ class AgentRunner:
         """内部持久化逻辑，支持结构化 tool_calls"""
         if not self.chat_id: return
         
-        asyncio.create_task(asyncio.to_thread(
-            session_store.save_message, 
-            self.chat_id, role, content, name, tool_call_id, tool_calls
-        ))
+        from rman.common.tasks import fire_and_forget
+        fire_and_forget(
+            asyncio.to_thread(
+                session_store.save_message,
+                self.chat_id, role, content, name, tool_call_id, tool_calls
+            ),
+            name="persist_message"
+        )
 
     async def _build_progress_summary(self) -> str:
         """基于当前 messages 生成进展摘要，用于逻辑死锁或超限时的优雅降级"""
