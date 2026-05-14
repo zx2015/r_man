@@ -11,6 +11,7 @@ llm:
   base_url: "https://api.openai.com/v1"
   api_key: "sk-..."
   model: "gpt-4o"
+  summarizer_model: ""  # 摘要压缩专用模型（如 gpt-4o-mini），留空则沿用主模型
   temperature: 0.2
   context_window: 200000
   max_tokens: 32768

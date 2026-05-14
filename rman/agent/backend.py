@@ -24,13 +24,15 @@ class LLMBackend:
             timeout=self.timeout
         )
 
-    async def chat(self, messages: List[Dict[str, str]], tools: Optional[List[Dict]] = None) -> Tuple[Any, Any]:
+    async def chat(self, messages: List[Dict[str, str]], tools: Optional[List[Dict]] = None, model_override: Optional[str] = None, max_tokens_override: Optional[int] = None) -> Tuple[Any, Any]:
         """
         带故障转移的对话请求。
+        - model_override: 指定单一模型（跳过 Fallback 链，适用于摘要等后台任务）
+        - max_tokens_override: 覆盖全局 max_tokens，用于强制执行 Token 预算
         依次尝试: main_model -> fallback_model[0] -> fallback_model[1] ...
         """
-        # 构建待尝试的模型列表
-        models_to_try = [self.main_model] + self.fallback_models
+        models_to_try = [model_override] if model_override else [self.main_model] + self.fallback_models
+        effective_max_tokens = max_tokens_override if max_tokens_override is not None else self.max_tokens
         last_exception = None
 
         for idx, model_name in enumerate(models_to_try):
@@ -48,7 +50,7 @@ class LLMBackend:
                     "model": model_name,
                     "messages": messages,
                     "temperature": self.temperature,
-                    "max_tokens": self.max_tokens,
+                    "max_tokens": effective_max_tokens,
                 }
                 if tools:
                     kwargs["tools"] = tools

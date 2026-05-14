@@ -22,6 +22,7 @@ class LLMConfig(BaseModel):
     api_key: str = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     model: str = "gpt-4o"
     fallback_models: List[str] = Field(default_factory=list)
+    summarizer_model: str = ""  # 摘要专用模型；若为空则沿用主模型
     temperature: float = 0.2
     context_window: int = 200000
     max_tokens: int = 32768

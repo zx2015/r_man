@@ -4,6 +4,11 @@ import asyncio
 from typing import List, Dict, Any, Tuple, Optional, Callable, Coroutine
 from loguru import logger
 
+try:
+    import tiktoken
+except ImportError:
+    tiktoken = None
+
 from rman.common.config import config
 from rman.agent.backend import llm_backend
 from rman.agent.prompt import prompt_builder
@@ -17,6 +22,7 @@ class AgentRunner:
         self.chat_id = chat_id
         self.max_iterations = config.agent.max_iterations
         self.messages: List[Dict[str, Any]] = []
+        self._rolling_summary: str = ""  # 增量滚动摘要，跨压缩轮次累积
 
     async def run(self, user_input: str, on_intermediate_status: Optional[Callable[[str], Coroutine[Any, Any, None]]] = None) -> Tuple[str, Dict[str, Any]]:
         """运行 ReAct 循环"""
@@ -139,8 +145,7 @@ class AgentRunner:
 
     async def _check_and_compress_context(self):
         """80/60 自动窗口压缩"""
-        total_chars = sum(len(str(m.get("content", ""))) for m in self.messages)
-        estimated_tokens = total_chars // 2 
+        estimated_tokens = self._count_tokens(self.messages)
         if estimated_tokens < config.llm.context_window * 0.8: return
 
         logger.warning(f"Context pressure ({estimated_tokens} tokens). Starting 80/60 compression...")
@@ -151,8 +156,19 @@ class AgentRunner:
         compressible_msgs = self.messages[1:-5]
         
         try:
+            # 动态计算摘要可用的 Token 预算 (目标 60% 减去固定保留部分)
+            system_tokens = self._count_tokens([system_msg])
+            preserved_tokens = self._count_tokens(preserved_msgs)
+            target_60_tokens = int(config.llm.context_window * 0.6)
+            allowed_summary_tokens = max(100, target_60_tokens - system_tokens - preserved_tokens)
+
             from rman.agent.summarizer import memory_summarizer
-            summary_text = await memory_summarizer.summarize_react_trace(json.dumps(compressible_msgs, ensure_ascii=False))
+            summary_text = await memory_summarizer.summarize_react_trace(
+                json.dumps(compressible_msgs, ensure_ascii=False),
+                existing_summary=self._rolling_summary,
+                max_tokens=allowed_summary_tokens
+            )
+            self._rolling_summary = summary_text  # 更新滚动状态，供下次差量压缩使用
             # 使用 assistant 角色记录技术摘要，并加上系统备注前缀，符合语义
             summary_msg = {"role": "assistant", "content": f"[System Note: Context Summary]\n{summary_text}\n---"}
             
@@ -165,14 +181,64 @@ class AgentRunner:
         except Exception as e:
             logger.error(f"Compression failed: {e}")
 
+    def _count_tokens(self, messages: List[Dict]) -> int:
+        """精确计算 Token 数量，支持 tiktoken 且具备启发式回退"""
+        if tiktoken is None:
+            total_chars = sum(len(str(m.get("content", ""))) for m in messages)
+            return total_chars // 2
+
+        try:
+            model = config.llm.model
+            try:
+                encoding = tiktoken.encoding_for_model(model)
+            except (KeyError, ValueError):
+                encoding = tiktoken.get_encoding("cl100k_base")
+            
+            num_tokens = 0
+            for message in messages:
+                num_tokens += 3 # 每条消息的基础开销
+                for key, value in message.items():
+                    if value is None: continue
+                    content = json.dumps(value) if isinstance(value, (list, dict)) else str(value)
+                    num_tokens += len(encoding.encode(content))
+            num_tokens += 3  # 角色前缀等开销
+            return num_tokens
+        except Exception as e:
+            logger.warning(f"Tiktoken count failed ({e}), falling back to heuristic.")
+            total_chars = sum(len(str(m.get("content", ""))) for m in messages)
+            return total_chars // 2
+
     def _parse_output(self, text: str) -> Tuple[Optional[str], Optional[str], List[Dict]]:
         think = None
         final = None
         actions = []
-        think_match = re.search(r"<think>(.*?)</think>", text, re.DOTALL)
-        if think_match: think = think_match.group(1).strip()
-        final_match = re.search(r"<final>(.*?)</final>", text, re.DOTALL)
-        if final_match: final = final_match.group(1).strip()
+
+        # 增强解析：支持未闭合标签及大小写不敏感
+        def extract_tag(content: str, tag: str) -> Optional[str]:
+            # 1. 尝试标准闭合标签匹配
+            pattern = rf"<{tag}>(.*?)</{tag}>"
+            match = re.search(pattern, content, re.DOTALL | re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+            
+            # 2. 尝试未闭合标签匹配：如果只有开标签，取其后直到下一个标签或结尾
+            open_tag = f"<{tag}>"
+            content_lower = content.lower()
+            tag_lower = open_tag.lower()
+            if tag_lower in content_lower:
+                start_pos = content_lower.find(tag_lower) + len(tag_lower)
+                remaining = content[start_pos:]
+                # 寻找下一个可能的标签以截断
+                next_tag_match = re.search(r"<(think|final|Action)>", remaining, re.IGNORECASE)
+                if next_tag_match:
+                    return remaining[:next_tag_match.start()].strip()
+                return remaining.strip()
+            return None
+
+        think = extract_tag(text, "think")
+        final = extract_tag(text, "final")
+        
+        # Action 解析保持相对宽松，主要依赖 JSON 结构
         action_matches = re.finditer(r"Action:\s*(\{.*?\})", text, re.DOTALL)
         for match in action_matches:
             try:
