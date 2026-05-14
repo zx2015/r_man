@@ -63,21 +63,27 @@ async def main():
                 
                 # 1. 主动探活
                 await feishu_handler.check_connection()
+
+                # 2. 后台进程 GC (每分钟执行一次，清理退出超过 1 小时的进程)
+                from rman.tools.process_manager import process_manager
+                process_manager.cleanup_finished(max_age_seconds=config.agent.process_session_max_ttl)
                 
-                # 2. 看门狗检查 (自愈重启逻辑)
+                # 3. 看门狗检查 (自愈重启逻辑)
                 from datetime import datetime
                 idle_seconds = (datetime.now() - feishu_handler.last_active_time).total_seconds()
                 if idle_seconds > 300: # 5 分钟无活跃信号则重启 (匹配 SDK 30s 心跳规律)
                     logger.error(f"WebSocket Watchdog: Connection dead or token expired (idle for {idle_seconds}s). Suiciding for restart...")
                     os.kill(os.getpid(), signal.SIGTERM)
                 
-                # 2. 内存清理计时 (计数单位也需同步修改)
+                # 2. 内存清理计时（间隔由 config.memory.cleanup_interval_hours 控制）
                 counter_24h += 1
-                if counter_24h >= 1440: # 1440 分钟 = 24 小时
+                cleanup_ticks = config.memory.cleanup_interval_hours * 60  # 每分钟 +1
+                if counter_24h >= cleanup_ticks:
                     from rman.storage.memory import memory_store
-                    import sqlite3
                     logger.info("Executing scheduled memory cleanup...")
-                    conn = sqlite3.connect(config.memory.db_path)
+                    # 使用 memory_store._get_connection() 确保加载 sqlite_vec 扩展，
+                    # 否则 DELETE FROM memory_vectors (vec0 虚拟表) 将静默失败。
+                    conn = memory_store._get_connection()
                     memory_store._cleanup_expired(conn)
                     conn.close()
                     counter_24h = 0

@@ -34,12 +34,17 @@ class MemoryStore:
                     expires_at DATETIME
                 )
             """)
-            # ... (保持虚拟表初始化不变)
+            # 2. 向量虚拟表 (sqlite-vec v0.x 使用 vec0，暴力 KNN，不支持 HNSW)
             conn.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors USING vec0(
                     id TEXT PRIMARY KEY,
                     embedding float[1024]
                 )
+            """)
+            # 3. 加速 expires_at 过滤与清理的索引
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_memory_expires
+                ON memory_entries(expires_at)
             """)
             conn.commit()
             self._cleanup_expired(conn)
@@ -50,27 +55,28 @@ class MemoryStore:
             conn.close()
 
     def _cleanup_expired(self, conn):
-        """物理删除过期记忆"""
+        """物理删除过期记忆 (优化为批量删除)"""
         try:
-            # 获取要删除的 ID 列表
-            expired = conn.execute("SELECT id FROM memory_entries WHERE expires_at < CURRENT_TIMESTAMP").fetchall()
-            ids = [row[0] for row in expired]
+            # 1. 先删除向量表 (vec0 虚拟表)
+            conn.execute("""
+                DELETE FROM memory_vectors 
+                WHERE id IN (SELECT id FROM memory_entries WHERE expires_at < CURRENT_TIMESTAMP)
+            """)
             
-            if not ids:
-                return
-
-            for mem_id in ids:
-                # 同步删除元数据和向量数据
-                conn.execute("DELETE FROM memory_vectors WHERE id = ?", (mem_id,))
-                conn.execute("DELETE FROM memory_entries WHERE id = ?", (mem_id,))
+            # 2. 再删除元数据表
+            cursor = conn.execute("DELETE FROM memory_entries WHERE expires_at < CURRENT_TIMESTAMP")
+            count = cursor.rowcount
             
             conn.commit()
-            logger.info(f"Cleaned up {len(ids)} expired memory entries.")
+            if count > 0:
+                logger.info(f"Cleaned up {count} expired memory entries.")
         except Exception as e:
             logger.error(f"Cleanup failed: {e}")
 
-    async def save(self, summary: str, embedding: List[float], tag: str = "general", ttl_days: int = 90):
+    async def save(self, summary: str, embedding: List[float], tag: str = "general", ttl_days: Optional[int] = None):
         """存入摘要与向量，带过期时间"""
+        if ttl_days is None:
+            ttl_days = config.memory.default_ttl_days
         mem_id = str(uuid.uuid4())
         conn = self._get_connection()
         try:
@@ -100,8 +106,7 @@ class MemoryStore:
         buf = struct.pack(f"{len(query_embedding)}f", *query_embedding)
         
         try:
-            # 执行相似度检索
-            # 使用 vec_distance_cosine 或默认的 vec_distance_L2
+            # 执行相似度检索，过滤掉尚未被清理的过期条目
             cursor = conn.execute("""
                 SELECT 
                     e.summary, 
@@ -111,6 +116,7 @@ class MemoryStore:
                 FROM memory_vectors v
                 JOIN memory_entries e ON v.id = e.id
                 WHERE embedding MATCH ? AND k = ?
+                  AND (e.expires_at IS NULL OR e.expires_at > CURRENT_TIMESTAMP)
                 ORDER BY distance ASC
             """, (buf, limit))
             

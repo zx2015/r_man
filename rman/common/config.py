@@ -53,6 +53,8 @@ class MemoryConfig(BaseModel):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     top_k: int = 3
     score_floor: float = 0.0
+    default_ttl_days: int = 90       # 记忆默认有效期（天）
+    cleanup_interval_hours: int = 24  # 定期清理过期记忆的间隔（小时）
 
 class TavilyConfig(BaseModel):
     api_key: str = Field(default_factory=lambda: os.getenv("TAVILY_API_KEY", ""))

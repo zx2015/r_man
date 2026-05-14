@@ -30,6 +30,8 @@ feishu:
 memory:
   provider: "sqlite_vec"
   db_path: "./data/memory.db"
+  default_ttl_days: 90       # 记忆默认有效期（天），由 memory_dump 工具使用
+  cleanup_interval_hours: 24  # 定期清理过期记忆的执行间隔（小时）
   embedding:
     base_url: "https://api.openai.com/v1"
     api_key: "sk-..."
