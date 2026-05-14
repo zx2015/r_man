@@ -4,6 +4,7 @@
 | :--- | :--- | :--- | :--- |
 | v1.0.0 | 2026-04-16 | 初始版本，定义 WebSocket 客户端与任务调度 | Gemini CLI |
 | v1.1.0 | 2026-04-27 | 详细中间状态反馈机制设计 | Gemini CLI |
+| v2.0.0 | 2026-05-15 | 新增消息解析异常防护、卡片 JSON 大小限制双层保护、ensure_ascii 修复 | GitHub Copilot |
 
 ## 1. 模块职责
 
@@ -124,10 +125,36 @@ class TaskQueue:
 
 ## 5. 异常处理
 
-### 5.1 消息重试
-- **发送失败**: 使用指数退避策略重试。
+### 5.1 消息解析防护（v2.0.0）
 
-### 5.2 连接看门狗 (Connection Watchdog)
+`_on_message_received` 是 SDK 的同步回调函数，内部异常会直接崩溃事件循环。因此对 `message.content` 的 JSON 解析**必须**包裹 try/except：
+
+```python
+try:
+    text_json = json.loads(message.content)
+    text = text_json.get("text", "").strip()
+except (json.JSONDecodeError, AttributeError) as e:
+    logger.warning(f"Failed to parse message content: {e!r}")
+    return  # 静默丢弃，不影响后续消息处理
+```
+
+### 5.2 卡片 JSON 大小限制（v2.0.0）
+
+飞书官方文档确认：**卡片消息请求体最大不能超过 30 KB**。
+
+`_send_card` 在发送前执行两层保护：
+
+| 层次 | 阈值 | 触发条件 | 策略 |
+| :--- | :--- | :--- | :--- |
+| **软上限** | 18 KB | `content_md` UTF-8 字节数超限 | 截断文本并追加 `⚠️ 内容较长，已截断显示` 提示 |
+| **硬限制** | 28 KB | 构建后 card JSON 字节数超限 | 降级为极简纯文本卡片，内容仅保留前 1000 字符 |
+
+**CJK 字节放大修复**：原 `json.dumps(card_json)` 默认使用 ASCII unicode 转义，每个汉字 3 字节（UTF-8）被编码为 `\uXXXX`（6字节），实际可用文本预算减半。v2.0.0 改为 `json.dumps(card_json, ensure_ascii=False)`，在同等卡片大小限制下文本容量翻倍。
+
+### 5.3 消息发送重试
+- **发送失败**: 最多重试 3 次，每次间隔 2 秒。
+
+### 5.4 连接看门狗 (Connection Watchdog)
 系统采用“内层心跳 + 外层看门狗”的混合监测机制：
 
 1.  **内层心跳 (SDK Level)**:

@@ -3,6 +3,7 @@
 | 版本号 | 日期 | 变更说明 | 作者 |
 | :--- | :--- | :--- | :--- |
 | v2.0.0 | 2026-04-17 | 全量同步最新实现，定义四层逻辑分层 | Gemini CLI |
+| v2.1.0 | 2026-05-15 | 同步多项稳定性与安全加固：LLM 熔断器/退避、Shell 安全加固、Feishu 卡片限制、Memory 配置化 | GitHub Copilot |
 
 ## 1. 设计愿景
 **r-man** 旨在通过一套标准化的“思考-行动-观察”循环（ReAct），将碎片化的系统工具（Shell、文件、进程）与强大的大语言模型（LLM）推理能力深度粘合，构建一个安全、可审计、具备长期记忆的自动化执行环境。
@@ -45,14 +46,26 @@ graph TD
 ### 2.1 交互层 (Interaction)
 维护与飞书的长连接。包含 **串行 FIFO 队列**，确保针对单用户的文件/Shell 操作是互斥且保序的。负责将 Markdown 自动升级为 UI 卡片组件。
 
+**安全约束**：飞书消息解析加入 try/except，防止非预期格式导致 SDK 事件循环崩溃。卡片 JSON 发送前执行双层大小保护（官方限制 30 KB）：软上限 18 KB 预截断内容，硬上限 28 KB 降级兜底；同时修复 `ensure_ascii=False`，避免 CJK 字符占用翻倍。
+
 ### 2.2 推理层 (Reasoning)
-系统的“大脑”。实现标签化解析（`<think>`/`<final>`）。监控 Token 压力，在达到 80% 阈值时自动触发摘要压缩（60% 目标）。
+系统的“大脑”。实现标签化解析（`<think>`/`<final>`）。监控 Token 压力，在达到 80% 阈值时自动触发**增量滚动摘要**压缩（60% 目标）。
+
+**上下文压缩升级**：v2.0.0 引入增量滚动摘要（Incremental Rolling Summary），每次压缩在 `existing_summary` 基础上叠加，而非重新摘要全部历史，避免已压缩信息的二次信息损耗。支持 `summarizer_model` 独立配置，可使用更廉价的模型完成压缩任务。
+
+**LLM 后端稳定性**：引入**熔断器（Circuit Breaker）**和**指数退避（Exponential Backoff）**。主模型连续失败 3 次后进入 OPEN 状态（熔断），60 秒后自动尝试恢复，避免超时堆叠浪费。退避等待优先读取 API 响应的 `Retry-After` 头。
 
 ### 2.3 能力层 (Capability)
 系统的“手脚”。所有操作必须经过 **`@audit_log` 装饰器** 记录意图。具备严格的路径校验，支持 `/tmp` 和 `workspace/` 路径放宽。
 
+**安全加固（v2.1.0）**：
+- Shell 命令安全检查升级为两层：`shlex.split` 解析 + 危险二进制白名单（`_DANGEROUS_BINARIES`） + 重定向目标路径提取，防止 `rm -rf` 变体绕过。
+- 路径校验全面改用 `os.path.realpath()` 替代 `abspath()`，防御符号链接（Symlink）穿越攻击。
+
 ### 2.4 存储层 (Storage)
-系统的“持久化根基”。存储 90 天有效期的向量化记忆，以及不可篡改的本地审计链。
+系统的“持久化根基”。向量化记忆有效期由 **`config.memory.default_ttl_days`** 配置（默认 90 天），清理间隔由 **`config.memory.cleanup_interval_hours`** 配置（默认 24 小时），以及不可篡改的本地审计链。
+
+**检索正确性修复（v2.1.0）**：`memory_search` 查询新增 `expires_at > CURRENT_TIMESTAMP` 过滤，防止定时清理未执行时过期记忆污染搜索结果。新增 `idx_memory_expires` 索引加速清理查询。定时清理改用 `_get_connection()`（加载 sqlite_vec 扩展）替换裸连接，修复向量表清理静默失败的 Bug。
 
 ## 3. 技术栈总结
 
