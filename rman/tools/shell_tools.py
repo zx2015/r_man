@@ -1,11 +1,14 @@
 import asyncio
 import os
 import shlex
-from typing import Optional
+from typing import Callable, List, Optional
 from pydantic import BaseModel, Field
 from rman.tools.base import BaseTool, audit_log
 from rman.common.config import config
 from loguru import logger
+
+# 前台命令进度心跳间隔（秒）
+_HEARTBEAT_INTERVAL = 60
 
 # 高危二进制黑名单：这些命令一旦带绝对路径参数，极易造成系统级破坏
 # 使用 shlex 解析后检查第一个 token，防止空格/转义绕过（如 rm\ -rf, "rm" -rf）
@@ -142,3 +145,113 @@ class ShellCommandTool(BaseTool):
         except Exception as e:
             logger.error(f"Failed to execute shell command: {e}")
             return f"Error: 执行失败 - {str(e)}"
+
+    async def execute_with_progress(
+        self,
+        progress_callback: Optional[Callable] = None,
+        command: str = "",
+        description: str = "",
+        dir_path: Optional[str] = None,
+        is_background: bool = False,
+        delay_ms: int = 0,
+        **kwargs,
+    ) -> str:
+        """带进度心跳的命令执行入口。前台模式每 60 秒调用一次 progress_callback；
+        后台模式和安全检查逻辑与 execute() 完全一致。"""
+        from rman.tools.process_manager import ManagedProcess, process_manager
+
+        workspace = os.path.realpath(config.agent.workspace_dir.replace("@", ""))
+        exec_dir = os.path.realpath(os.path.join(workspace, dir_path)) if dir_path else workspace
+
+        if not exec_dir.startswith(workspace):
+            return f"Error: 权限拒绝。只能在工作目录 {workspace} 内执行命令。"
+
+        safety_err = _check_command_safety(command, workspace)
+        if safety_err:
+            return safety_err
+
+        logger.info(f"Executing Shell Command (Background={is_background}, Progress=True): {command}")
+
+        try:
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=exec_dir,
+            )
+            pid = process.pid
+
+            if is_background:
+                m_proc = ManagedProcess(pid, command, description, process)
+                process_manager.add_process(m_proc)
+                if delay_ms > 0:
+                    await asyncio.sleep(delay_ms / 1000.0)
+                initial_output = "\n".join(m_proc.output_buffer)
+                return (
+                    f"Success: 任务已在后台启动。PID: {pid}\n"
+                    f"初始输出快照:\n{initial_output if initial_output else '[无即时输出]'}"
+                )
+            else:
+                return await self._run_foreground_with_heartbeat(process, command, progress_callback)
+
+        except Exception as e:
+            logger.error(f"Failed to execute shell command (with_progress): {e}")
+            return f"Error: 执行失败 - {str(e)}"
+
+    async def _run_foreground_with_heartbeat(
+        self,
+        process: asyncio.subprocess.Process,
+        command: str,
+        progress_callback: Optional[Callable],
+    ) -> str:
+        """流式读取 stdout/stderr，每 _HEARTBEAT_INTERVAL 秒触发一次进度回调。"""
+        stdout_lines: List[str] = []
+        stderr_lines: List[str] = []
+
+        async def _drain(stream: asyncio.StreamReader, buf: List[str]) -> None:
+            while True:
+                line = await stream.readline()
+                if not line:
+                    break
+                buf.append(line.decode("utf-8", errors="replace").rstrip())
+
+        # 后台并发读取两个流，避免管道缓冲区满导致进程阻塞
+        async def _read_all() -> None:
+            await asyncio.gather(
+                _drain(process.stdout, stdout_lines),
+                _drain(process.stderr, stderr_lines),
+            )
+
+        reader = asyncio.create_task(_read_all())
+
+        start = asyncio.get_event_loop().time()
+        last_heartbeat = start
+
+        # 1 秒轮询，直到进程退出
+        while process.returncode is None:
+            await asyncio.sleep(1)
+            now = asyncio.get_event_loop().time()
+            if progress_callback and (now - last_heartbeat) >= _HEARTBEAT_INTERVAL:
+                elapsed_min = int((now - start) / 60)
+                recent = (stdout_lines + stderr_lines)[-10:]
+                try:
+                    await progress_callback(
+                        {
+                            "command": command,
+                            "elapsed_minutes": elapsed_min,
+                            "recent_output": recent,
+                        }
+                    )
+                except Exception as cb_exc:
+                    logger.warning(f"Progress callback error: {cb_exc}")
+                last_heartbeat = now
+
+        await reader  # 等待剩余输出全部刷入缓冲区
+
+        exit_code = process.returncode
+        result = [f"Command: {command}", f"Exit Code: {exit_code}"]
+        if stdout_lines:
+            result.append(f"--- Standard Output ---\n" + "\n".join(stdout_lines))
+        if stderr_lines:
+            result.append(f"--- Standard Error ---\n" + "\n".join(stderr_lines))
+        return "\n\n".join(result)

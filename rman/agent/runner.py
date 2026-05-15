@@ -24,7 +24,7 @@ class AgentRunner:
         self.messages: List[Dict[str, Any]] = []
         self._rolling_summary: str = ""  # 增量滚动摘要，跨压缩轮次累积
 
-    async def run(self, user_input: str, on_intermediate_status: Optional[Callable[[str], Coroutine[Any, Any, None]]] = None) -> Tuple[str, Dict[str, Any]]:
+    async def run(self, user_input: str, on_intermediate_status: Optional[Callable[[str], Coroutine[Any, Any, None]]] = None, progress_callback: Optional[Callable] = None) -> Tuple[str, Dict[str, Any]]:
         """运行 ReAct 循环"""
         # 1. 系统层 (System Layer)
         tool_descriptions = tool_registry.generate_tools_description()
@@ -107,8 +107,14 @@ class AgentRunner:
                     call_id = action.get("call_id")
                     
                     tool = tool_registry.get_tool(tool_name)
-                    # 恢复简单调用，不再强制注入 chat_id
-                    obs = await tool.execute(**params) if tool else f"Error: 找不到工具 {tool_name}。"
+                    # 若工具支持进度回调（如 ShellCommandTool），优先走 execute_with_progress
+                    if tool:
+                        if progress_callback and hasattr(tool, "execute_with_progress"):
+                            obs = await tool.execute_with_progress(progress_callback=progress_callback, **params)
+                        else:
+                            obs = await tool.execute(**params)
+                    else:
+                        obs = f"Error: 找不到工具 {tool_name}。"
                     
                     # 仅保留硬熔断（100,000 字符），防止单次请求超过 LLM API 物理极限
                     # 不再进行 AI 摘要，确保原始数据的纯净性

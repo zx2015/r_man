@@ -164,20 +164,7 @@ class FeishuInteraction:
             logger.warning(f"Failed to parse message content as JSON: {e!r}, raw: {str(message.content)[:200]!r}")
             return
 
-        # 1. 发送“思考中”卡片
-        self.loop.call_soon_threadsafe(
-            lambda: fire_and_forget(
-                self._send_card(
-                    chat_id,
-                    "🤖 R-MAN 正在思考中...",
-                    f"正在处理用户消息: `{text}`",
-                    template="blue"
-                ),
-                name="send_thinking_card"
-            )
-        )
-        
-        # 2. 提交任务
+        # 提交任务（"思考中"卡片在 _process_agent_task 内发送，以捕获 message_id 用于进度更新）
         coro = self._process_agent_task(message.message_id, text, chat_id)
         self.loop.call_soon_threadsafe(
             lambda: fire_and_forget(task_queue.add_task(coro), name="queue_agent_task")
@@ -192,6 +179,14 @@ class FeishuInteraction:
         logger.info(f"Task started for message {message_id}: {text}")
         
         try:
+            # 1. 发送"思考中"卡片，捕获 message_id 用于后续进度更新
+            thinking_msg_id: Optional[str] = await self._send_card(
+                chat_id,
+                "🤖 R-MAN 正在思考中...",
+                f"正在处理用户消息: `{text[:100]}`",
+                template="blue",
+            )
+
             # 传入 chat_id 以加载历史
             runner = AgentRunner(session_id=message_id, chat_id=chat_id)
             
@@ -205,9 +200,28 @@ class FeishuInteraction:
                     else:
                         formatted_content = content
                     await self._send_card(chat_id, "⚙️ R-MAN 执行中...", formatted_content, template="turquoise")
+
+            # 定义进度心跳回调：就地更新"思考中"卡片，每 60 秒推送一次执行进度
+            async def progress_callback(status_info: dict):
+                if not thinking_msg_id:
+                    return
+                elapsed = status_info.get("elapsed_minutes", 0)
+                cmd = status_info.get("command", "")
+                recent = status_info.get("recent_output", [])
+                recent_text = "\n".join(recent[-5:]) if recent else "暂无新输出"
+                content_md = (
+                    f"⏱ **已运行**: {elapsed} 分钟\n"
+                    f"🖥 **命令**: `{cmd[:80]}`\n\n"
+                    f"**最近输出**:\n```\n{recent_text}\n```"
+                )
+                await self._patch_card(thinking_msg_id, "🔄 命令执行中...", content_md, template="orange")
             
             # 运行 Agent
-            final_answer, usage = await runner.run(text, on_intermediate_status=intermediate_callback)
+            final_answer, usage = await runner.run(
+                text,
+                on_intermediate_status=intermediate_callback,
+                progress_callback=progress_callback,
+            )
             
             # 发送结果卡片
             await self._send_card(chat_id, "🤖 R-MAN 执行报告", final_answer, template="green", usage=usage)
@@ -222,7 +236,7 @@ class FeishuInteraction:
                 template="red"
             )
 
-    async def _send_card(self, chat_id: str, title: str, content_md: str, template: str = "blue", usage: Optional[dict] = None):
+    async def _send_card(self, chat_id: str, title: str, content_md: str, template: str = "blue", usage: Optional[dict] = None) -> Optional[str]:
         """发送智能增强的交互式卡片消息"""
         from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
         from rman.common.card_utils import CardFormatter
@@ -318,7 +332,7 @@ class FeishuInteraction:
                 response = await self.loop.run_in_executor(None, self.client.im.v1.message.create, request)
                 if response.success():
                     logger.debug(f"Card sent successfully (Attempt {attempt+1})")
-                    return
+                    return response.data.message_id if response.data else None
                 else:
                     logger.error(f"Failed to send card (Attempt {attempt+1}): {response.code}, {response.msg}")
             except Exception as e:
@@ -328,6 +342,44 @@ class FeishuInteraction:
                 await asyncio.sleep(2)
 
         logger.critical(f"Failed to send card after all attempts.")
+        return None
+
+    async def _patch_card(self, message_id: str, title: str, content_md: str, template: str = "orange") -> bool:
+        """就地更新一张已发送的卡片消息，用于长时间运行命令的进度心跳。"""
+        from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
+
+        curr_time = datetime.now().strftime('%H:%M:%S')
+        card_json = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": title},
+                "template": template,
+            },
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md", "content": content_md}},
+                {
+                    "tag": "note",
+                    "elements": [{"tag": "plain_text", "content": f"⏱ {curr_time} | R-MAN | {self.hostname}"}],
+                },
+            ],
+        }
+        card_str = json.dumps(card_json, ensure_ascii=False)
+
+        request = (
+            PatchMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(PatchMessageRequestBody.builder().content(card_str).build())
+            .build()
+        )
+        try:
+            response = await self.loop.run_in_executor(None, self.client.im.v1.message.patch, request)
+            if response.success():
+                logger.debug(f"Card {message_id} patched (progress heartbeat)")
+                return True
+            logger.warning(f"Failed to patch card {message_id}: {response.code}, {response.msg}")
+        except Exception as e:
+            logger.warning(f"Error patching card {message_id}: {e}")
+        return False
 
 
 # 单例
