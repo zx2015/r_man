@@ -1,7 +1,7 @@
 import json
 import functools
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Type
+from typing import Dict, Any, Type, Optional
 from pydantic import BaseModel
 from loguru import logger
 
@@ -26,8 +26,6 @@ def audit_log(func):
         logger.bind(audit=True).info(json.dumps(audit_data, ensure_ascii=False))
         return result
     return wrapper
-
-from typing import Dict, Any, Type, Optional
 
 class BaseTool(ABC):
     """所有 R-MAN 工具的基类"""

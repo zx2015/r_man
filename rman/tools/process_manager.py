@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime
 from typing import Dict, List, Optional
 from loguru import logger
+from rman.common.config import config
 
 class ManagedProcess:
     """受控后台进程的数据模型"""
@@ -66,6 +67,24 @@ class ProcessManager:
         if pid in self._processes:
             del self._processes[pid]
             logger.info(f"Process {pid} removed from manager.")
+
+    def cleanup_finished(self, max_age_seconds: Optional[int] = None):
+        """清理已退出且超过最大存活时间的进程"""
+        if max_age_seconds is None:
+            max_age_seconds = config.process_session_max_ttl
+        now = datetime.now()
+        to_remove = []
+        for pid, m_proc in self._processes.items():
+            if m_proc.process.returncode is not None:
+                age = (now - m_proc.start_time).total_seconds()
+                if age > max_age_seconds:
+                    to_remove.append(pid)
+        
+        for pid in to_remove:
+            self.remove_process(pid)
+        
+        if to_remove:
+            logger.info(f"GC: Cleaned up {len(to_remove)} finished processes.")
 
 # 单例
 process_manager = ProcessManager()

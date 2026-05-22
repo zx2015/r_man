@@ -19,6 +19,9 @@ from rman.storage.session import session_store
 
 class AgentRunner:
     """ReAct Agent 执行引擎，支持 5 层 Context 结构、80/60 压缩与实时持久化"""
+
+    _MAX_OBS_LENGTH = 100_000  # Observation 硬截断上限，防止单次请求超过 LLM API 物理极限
+
     def __init__(self, session_id: str, chat_id: str = ""):
         self.session_id = session_id
         self.chat_id = chat_id
@@ -121,9 +124,9 @@ class AgentRunner:
                     
                     # 仅保留硬熔断（100,000 字符），防止单次请求超过 LLM API 物理极限
                     # 不再进行 AI 摘要，确保原始数据的纯净性
-                    if len(obs) > 100000:
-                        logger.warning(f"Observation exceeds 100k chars. Applying hard truncation.")
-                        obs = obs[:100000] + "\n\n[Warning: Output exceeds 100k chars and was hard-truncated for system stability.]"
+                    if len(obs) > self._MAX_OBS_LENGTH:
+                        logger.warning(f"Observation exceeds {self._MAX_OBS_LENGTH // 1000}k chars. Applying hard truncation.")
+                        obs = obs[:self._MAX_OBS_LENGTH] + f"\n\n[Warning: Output exceeds {self._MAX_OBS_LENGTH // 1000}k chars and was hard-truncated for system stability.]"
 
                     # 记录 Observation 层并持久化
                     if call_id:
