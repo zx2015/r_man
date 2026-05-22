@@ -1,7 +1,7 @@
 import asyncio
 import os
 import shlex
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple, Union
 from pydantic import BaseModel, Field
 from rman.tools.base import BaseTool, audit_log
 from rman.common.config import config
@@ -93,55 +93,75 @@ class ShellCommandTool(BaseTool):
     description = "在服务器上执行 Bash 命令。支持前台阻塞与后台异步两种模式。"
     parameters_schema = ShellCommandParams
 
-    @audit_log
-    async def execute(self, command: str, description: str, dir_path: Optional[str] = None, is_background: bool = False, delay_ms: int = 0, **kwargs) -> str: # type: ignore[override]
+    async def _prepare_and_launch(
+        self,
+        command: str,
+        description: str,
+        dir_path: Optional[str],
+        is_background: bool,
+        delay_ms: int,
+    ) -> Tuple[Optional[str], Optional[asyncio.subprocess.Process]]:
+        """共享的权限校验 + 安全检查 + 子进程启动逻辑。
+
+        返回:
+          (error_str, None)   — 提前失败（权限 / 安全拦截 / 后台成功）
+          (None, process)     — 前台进程就绪，调用方继续处理
+        """
         from rman.tools.process_manager import ManagedProcess, process_manager
 
-        # 1. 确定工作目录（使用 realpath 解析软链，防止软链目录绕过）
         workspace = os.path.realpath(config.agent.workspace_dir.replace("@", ""))
         exec_dir = os.path.realpath(os.path.join(workspace, dir_path)) if dir_path else workspace
 
         if not exec_dir.startswith(workspace):
-            return f"Error: 权限拒绝。只能在工作目录 {workspace} 内执行命令。"
+            return f"Error: 权限拒绝。只能在工作目录 {workspace} 内执行命令。", None
 
-        # 2. 命令安全检查
         safety_err = _check_command_safety(command, workspace)
         if safety_err:
-            return safety_err
-
-        logger.info(f"Executing Shell Command (Background={is_background}): {command}")
+            return safety_err, None
 
         try:
-            # 3. 启动子进程
             process = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=exec_dir
+                cwd=exec_dir,
             )
 
-            pid = process.pid
-
             if is_background:
-                # 4. 后台模式：交给管理器并等待快照
-                m_proc = ManagedProcess(pid, command, description, process)
+                m_proc = ManagedProcess(process.pid, command, description, process)
                 process_manager.add_process(m_proc)
-                
                 if delay_ms > 0:
                     await asyncio.sleep(delay_ms / 1000.0)
-                
                 initial_output = "\n".join(m_proc.output_buffer)
-                return f"Success: 任务已在后台启动。PID: {pid}\n初始输出快照:\n{initial_output if initial_output else '[无即时输出]'}"
-            
-            else:
-                # 5. 前台模式：死等结束
-                stdout, stderr = await process.communicate()
-                exit_code = process.returncode
-                result = [f"Command: {command}", f"Exit Code: {exit_code}"]
-                if stdout: result.append(f"--- Standard Output ---\n{stdout.decode('utf-8', errors='replace')}")
-                if stderr: result.append(f"--- Standard Error ---\n{stderr.decode('utf-8', errors='replace')}")
-                return "\n\n".join(result)
+                return (
+                    f"Success: 任务已在后台启动。PID: {process.pid}\n"
+                    f"初始输出快照:\n{initial_output if initial_output else '[无即时输出]'}"
+                ), None
 
+            return None, process
+
+        except Exception as e:
+            logger.error(f"Failed to launch shell command: {e}")
+            return f"Error: 执行失败 - {str(e)}", None
+
+    @audit_log
+    async def execute(self, command: str, description: str, dir_path: Optional[str] = None, is_background: bool = False, delay_ms: int = 0, **kwargs) -> str: # type: ignore[override]
+        logger.info(f"Executing Shell Command (Background={is_background}): {command}")
+
+        early_result, process = await self._prepare_and_launch(
+            command, description, dir_path, is_background, delay_ms
+        )
+        if early_result is not None:
+            return early_result
+
+        # 前台模式：communicate() 一次性等待完成
+        try:
+            stdout, stderr = await process.communicate()
+            exit_code = process.returncode
+            result = [f"Command: {command}", f"Exit Code: {exit_code}"]
+            if stdout: result.append(f"--- Standard Output ---\n{stdout.decode('utf-8', errors='replace')}")
+            if stderr: result.append(f"--- Standard Error ---\n{stderr.decode('utf-8', errors='replace')}")
+            return "\n\n".join(result)
         except Exception as e:
             logger.error(f"Failed to execute shell command: {e}")
             return f"Error: 执行失败 - {str(e)}"
@@ -158,45 +178,15 @@ class ShellCommandTool(BaseTool):
     ) -> str:
         """带进度心跳的命令执行入口。前台模式每 60 秒调用一次 progress_callback；
         后台模式和安全检查逻辑与 execute() 完全一致。"""
-        from rman.tools.process_manager import ManagedProcess, process_manager
-
-        workspace = os.path.realpath(config.agent.workspace_dir.replace("@", ""))
-        exec_dir = os.path.realpath(os.path.join(workspace, dir_path)) if dir_path else workspace
-
-        if not exec_dir.startswith(workspace):
-            return f"Error: 权限拒绝。只能在工作目录 {workspace} 内执行命令。"
-
-        safety_err = _check_command_safety(command, workspace)
-        if safety_err:
-            return safety_err
-
         logger.info(f"Executing Shell Command (Background={is_background}, Progress=True): {command}")
 
-        try:
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=exec_dir,
-            )
-            pid = process.pid
+        early_result, process = await self._prepare_and_launch(
+            command, description, dir_path, is_background, delay_ms
+        )
+        if early_result is not None:
+            return early_result
 
-            if is_background:
-                m_proc = ManagedProcess(pid, command, description, process)
-                process_manager.add_process(m_proc)
-                if delay_ms > 0:
-                    await asyncio.sleep(delay_ms / 1000.0)
-                initial_output = "\n".join(m_proc.output_buffer)
-                return (
-                    f"Success: 任务已在后台启动。PID: {pid}\n"
-                    f"初始输出快照:\n{initial_output if initial_output else '[无即时输出]'}"
-                )
-            else:
-                return await self._run_foreground_with_heartbeat(process, command, progress_callback)
-
-        except Exception as e:
-            logger.error(f"Failed to execute shell command (with_progress): {e}")
-            return f"Error: 执行失败 - {str(e)}"
+        return await self._run_foreground_with_heartbeat(process, command, progress_callback)
 
     async def _run_foreground_with_heartbeat(
         self,

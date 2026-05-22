@@ -197,11 +197,11 @@ class LLMBackend:
                         continue
                     else:
                         logger.critical(f"!!! All models exhausted. Last error: {e}")
-                        raise last_exception
+                        raise
                 else:
                     # 非可重试错误（鉴权失败、参数错误等）立即抛出，不污染熔断计数
                     logger.critical(f"!!! LLM Request FAILED FATALLY [Model: {model_name}]: {e}")
-                    raise last_exception
+                    raise
 
         # 所有模型均被熔断跳过
         if last_exception:

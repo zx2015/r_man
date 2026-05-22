@@ -12,6 +12,8 @@ except ImportError:
 from rman.common.config import config
 from rman.agent.backend import llm_backend
 from rman.agent.prompt import prompt_builder
+from rman.agent.summarizer import memory_summarizer
+from rman.common.tasks import fire_and_forget
 from rman.tools.registry import tool_registry
 from rman.storage.session import session_store
 
@@ -86,7 +88,8 @@ class AgentRunner:
                 for tc in llm_message.tool_calls:
                     try:
                         actions_to_run.append({"tool": tc.function.name, "parameters": json.loads(tc.function.arguments), "call_id": tc.id})
-                    except: pass
+                    except (json.JSONDecodeError, ValueError) as e:
+                        logger.warning(f"Failed to parse tool call arguments for '{tc.function.name}': {e}")
             elif text_actions:
                 actions_to_run = text_actions
 
@@ -185,8 +188,6 @@ class AgentRunner:
     def _persist_message(self, role: str, content: str, name: str = None, tool_call_id: str = None, tool_calls: Any = None):
         """内部持久化逻辑，支持结构化 tool_calls"""
         if not self.chat_id: return
-        
-        from rman.common.tasks import fire_and_forget
         fire_and_forget(
             asyncio.to_thread(
                 session_store.save_message,
@@ -197,7 +198,6 @@ class AgentRunner:
 
     async def _build_progress_summary(self) -> str:
         """基于当前 messages 生成进展摘要，用于逻辑死锁或超限时的优雅降级"""
-        from rman.agent.summarizer import memory_summarizer
         # 取最近 20 条消息（跳过 system prompt）作为摘要输入，避免信息过载
         recent_msgs = self.messages[1:][-20:]
         trace = json.dumps(recent_msgs, ensure_ascii=False)
@@ -236,7 +236,6 @@ class AgentRunner:
             target_60_tokens = int(config.llm.context_window * 0.6)
             allowed_summary_tokens = max(100, target_60_tokens - system_tokens - preserved_tokens)
 
-            from rman.agent.summarizer import memory_summarizer
             summary_text = await memory_summarizer.summarize_react_trace(
                 json.dumps(compressible_msgs, ensure_ascii=False),
                 existing_summary=self._rolling_summary,

@@ -1,6 +1,7 @@
 import sqlite3
 import json
 import os
+from datetime import datetime
 from typing import List, Dict, Any
 from loguru import logger
 
@@ -37,10 +38,11 @@ class SessionStore:
                      name: str = None, tool_call_id: str = None, tool_calls: Any = None):
         """保存单条消息到 FTS5 表"""
         tool_calls_json = json.dumps(tool_calls, ensure_ascii=False) if tool_calls else None
+        ts = datetime.now().isoformat()
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT INTO session_history (chat_id, role, content, name, tool_call_id, tool_calls) VALUES (?, ?, ?, ?, ?, ?)",
-                (chat_id, role, content, name, tool_call_id, tool_calls_json)
+                "INSERT INTO session_history (chat_id, role, content, name, tool_call_id, tool_calls, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (chat_id, role, content, name, tool_call_id, tool_calls_json, ts)
             )
 
     def load_history(self, chat_id: str, limit: int = 50) -> List[Dict[str, Any]]:
