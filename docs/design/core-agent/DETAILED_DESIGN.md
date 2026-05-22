@@ -4,6 +4,7 @@
 | :--- | :--- | :--- | :--- |
 | v1.0.0 | 2026-04-16 | 初始版本，定义 ReAct 引擎实现与 Prompt 组装 | Gemini CLI |
 | v2.0.0 | 2026-05-15 | 全面更新：重构上下文压缩系统、LLM 后端引入熔断器与指数退避 | GitHub Copilot |
+| v2.1.0 | 2026-05-22 | 新增死锁检测三级升级机制、优雅超限退出、progress_callback 参数；修复裸 except、backend traceback 丢失；模块级 import 清理 | GitHub Copilot |
 
 ## 1. 模块职责
 
@@ -18,9 +19,12 @@ classDiagram
         -messages: List[Message]
         -_rolling_summary: str
         -max_iterations: int
-        +run(user_input: str) -> FinalAnswer
-        -step() -> StepResult
+        -consecutive_empty: int
+        -last_tool_name: Optional[str]
+        +run(user_input, on_intermediate_status, progress_callback) -> FinalAnswer
         -_check_and_compress_context()
+        -_build_progress_summary() -> str
+        -_persist_message(role, content, ...)
     }
 
     class PromptBuilder {
@@ -66,7 +70,7 @@ classDiagram
 
 Agent 的 `run` 方法是一个同步/异步阻塞过程，核心逻辑如下：
 
-1.  **初始化**: 创建 `session_id`，从 `PromptBuilder` 获取 System Prompt，将其作为第一条消息。`_rolling_summary` 初始化为空字符串。
+1.  **初始化**: 创建 `session_id`，从 `PromptBuilder` 获取 System Prompt，将其作为第一条消息。`_rolling_summary` 和 `consecutive_empty` 初始化为零。
 2.  **迭代循环**:
     - **Step 1: 带熔断器的 LLM 调用**:
         1. 调用 `LLMBackend.chat`。
@@ -74,15 +78,46 @@ Agent 的 `run` 方法是一个同步/异步阻塞过程，核心逻辑如下：
            - `CLOSED`：正常发起请求，失败后进行指数退避重试（最多 3 次）。
            - `OPEN`：主模型已熔断（近期多次失败），跳过，直接尝试 fallback 模型。
            - `HALF_OPEN`：熔断恢复期，发出一次探针请求，成功则闭合，失败则重开。
-        3. 若所有模型均不可用，抛出异常并记录告警日志。
+        3. 若所有模型均不可用，裸 `raise` 保留完整调用栈（v2.1.0 修复）。
         4. 成功后返回消息及消耗统计，并标识实际使用的模型。
-    - **Step 2**: 解析 LLM 输出。
-        - 匹配 `Thought:` 和 `Action:` JSON。
-        - 若匹配失败且未输出 `Final Answer:`，则向 LLM 注入格式错误提示并重试（最多 1 次）。
-    - **Step 3**: 若解析出 `Action`，则从 `ToolRegistry` 查找工具并执行。
+    - **Step 2**: 解析 LLM 输出（`<think>` / `<final>` / tool_calls）。tool_calls JSON 解析失败时记录 WARNING（v2.1.0 修复，不再裸 pass）。
+    - **Step 3**: 若解析出 Action，检测工具是否支持 `execute_with_progress()`。若支持且 `progress_callback` 非空，则优先调用带进度回调的版本。
     - **Step 4**: 将工具返回的 `Observation` 封装为消息，存入上下文。
-    - **Step 5**: 检查迭代次数。若 `iterations >= max_iterations`，强制结束并返回摘要。
-3.  **终止**: 解析出 `Final Answer:` 时，返回结果。
+    - **Step 5（死锁检测）**: 若既无 Action 也无 `<final>`，递增 `consecutive_empty` 并执行三级升级策略（见 §3.1）。
+    - **Step 6（超限优雅退出）**: 达到 `max_iterations` 时调用 `_build_progress_summary()` 生成进展摘要，而非裸返回错误字符串。
+3.  **终止**: 解析出 `<final>` 时返回结果；死锁提前退出或超限退出时返回摘要报告。
+
+### 3.1 死锁检测三级升级机制（v2.1.0）
+
+当 LLM 连续返回空内容或无标签内容时（常见于上下文过长导致模型截断），`consecutive_empty` 计数器递增并触发对应策略：
+
+| `consecutive_empty` | 策略 | 注入内容示例 |
+| :--- | :--- | :--- |
+| **1** | 温和引导（带上下文） | `"你已获取了 {last_tool_name} 的执行结果，请基于此继续推理..."` |
+| **2** | 强制指令 | `"⚠️ 系统警告：连续 2 轮未输出有效内容。请立即使用 <final> 或调用工具..."` |
+| **≥3** | 提前退出 + 进展摘要 | 调用 `_build_progress_summary()`，返回结构化进展报告 |
+
+任何成功执行 Action 的轮次会将 `consecutive_empty` 归零。
+
+### 3.2 进展摘要生成（`_build_progress_summary`）
+
+死锁提前退出和 `max_iterations` 超限均调用此方法：
+
+1. 取最近 20 条消息（跳过 System Prompt）作为摘要输入。
+2. 调用 `memory_summarizer.summarize_react_trace(trace, existing_summary=_rolling_summary, max_tokens=500)`。
+3. 若摘要器调用失败，降级为提取最后一条 `assistant/tool` 消息前 300 字符。
+
+### 3.3 `progress_callback` 接口
+
+`run()` 方法的可选参数，类型为 `Optional[Callable[[dict], Coroutine]]`，约定的 dict 字段：
+
+| 字段 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| `command` | str | 正在运行的命令 |
+| `elapsed_minutes` | int | 已运行分钟数 |
+| `recent_output` | List[str] | 最近输出行（最多 10 行） |
+
+工具层通过 `hasattr(tool, 'execute_with_progress')` 检测支持状态，当前仅 `ShellCommandTool` 实现此接口。
 
 ## 4. 动态 Prompt 组装逻辑
 
@@ -192,6 +227,18 @@ attempt 3: base(1s) * 2^2 = 4s ± jitter (主模型放弃，切 fallback)
 | `_CB_RECOVERY_SECONDS` | 60 | OPEN → HALF_OPEN 冷却时间（秒） |
 | `_BACKOFF_BASE` | 1.0 | 退避基数（秒） |
 | `_BACKOFF_MAX` | 30.0 | 单次退避最大等待（秒） |
+
+### 6.4 异常栈保留（v2.1.0）
+
+v2.1.0 修复了 `raise last_exception` 导致原始调用栈丢失的问题。由于最终 `raise` 仍在 `except Exception as e:` 块内部，改为裸 `raise` 即可原地重抛，调试时可精确定位故障行。
+
+```python
+# 修复前：新建 traceback frame，隐藏原始位置
+raise last_exception
+
+# 修复后：原地重抛，完整保留调用栈
+raise
+```
 
 ## 7. 工具注册与执行契约
 

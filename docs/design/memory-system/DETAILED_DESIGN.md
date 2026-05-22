@@ -4,6 +4,7 @@
 | :--- | :--- | :--- | :--- |
 | v2.0.0 | 2026-04-17 | 初始版本，定义脱敏摘要算法与 SQLite 向量存储 | Gemini CLI |
 | v2.1.0 | 2026-05-15 | 配置化 TTL/清理间隔、搜索过期过滤、expires_at 索引、修复裸连接 Bug | GitHub Copilot |
+| v2.2.0 | 2026-05-22 | 修复 session_history.save_message() INSERT 漏写 timestamp 列的 Bug | GitHub Copilot |
 
 ## 1. 核心流程：异步摘要存入 (Auto-Dump)
 
@@ -111,16 +112,19 @@ ORDER BY distance ASC
 
 ### 5.1 数据库 Schema
 ```sql
-CREATE TABLE IF NOT EXISTS session_history (
-    chat_id TEXT,
-    role TEXT,       -- user, assistant, tool, summary (来自 80/60 压缩)
-    content TEXT,
-    tool_call_id TEXT, -- 用于关联原生 tool_calls
-    name TEXT,         -- 工具名称
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+CREATE VIRTUAL TABLE IF NOT EXISTS session_history USING fts5(
+    chat_id,
+    role,          -- user, assistant, tool, summary (来自 80/60 压缩)
+    content,
+    tool_call_id,  -- 用于关联原生 tool_calls
+    name,          -- 工具名称
+    tool_calls,    -- JSON 序列化的 tool_calls 数组
+    timestamp,
+    tokenize='unicode61'
 );
-CREATE INDEX IF NOT EXISTS idx_session_chat ON session_history(chat_id);
 ```
+
+> **v2.2.0 Bug 修复**：`save_message()` 的 INSERT 语句曾遗漏 `timestamp` 列，导致 `search_sessions()` 返回结果中时间字段全为 NULL，FTS5 时间范围查询失效。已修复为写入 `datetime.now().isoformat()`。
 
 ### 5.2 恢复机制
 1.  **加载**: 启动新 Agent 时，加载最近 20-50 条消息。

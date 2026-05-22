@@ -5,6 +5,7 @@
 | v1.0.0 | 2026-04-16 | 初始版本，定义 WebSocket 客户端与任务调度 | Gemini CLI |
 | v1.1.0 | 2026-04-27 | 详细中间状态反馈机制设计 | Gemini CLI |
 | v2.0.0 | 2026-05-15 | 新增消息解析异常防护、卡片 JSON 大小限制双层保护、ensure_ascii 修复 | GitHub Copilot |
+| v2.1.0 | 2026-05-22 | 新增前台命令进度心跳：_send_card 返回 message_id、_patch_card 就地更新、progress_callback 闭包；思考中卡片移入 _process_agent_task | GitHub Copilot |
 
 ## 1. 模块职责
 
@@ -116,12 +117,19 @@ class TaskQueue:
 - `memory_search`: 提取 `query`。
 - `web_search`: 提取搜索词。
 
-#### 实现方法：`_send_card`
-- **输入**: `chat_id`, `title`, `markdown_content`, `color_template`
+#### 实现方法：`_send_card` / `_patch_card`
+
+**`_send_card(chat_id, title, content_md, template, usage) → Optional[str]`**（v2.1.0 改为返回 `message_id`）
+- **输入**: `chat_id`, `title`, `markdown_content`, `color_template`, 可选 `usage` 统计
 - **逻辑**: 
-    1. 构造 JSON 结构。
-    2. **配置开启**: 设置 `config.wide_screen_mode = True`。
-    3. 调用 `client.im.v1.message.create` 接口，并使用 `loop.run_in_executor` 保持异步非阻塞。
+    1. 内容软限截断 → 自动颜色推断 → `CardFormatter` 渲染 → 可选 token 用量分栏。
+    2. 硬限兜底：card JSON 超 28 KB 时降级为极简纯文本卡片。
+    3. 调用 `client.im.v1.message.create`，**成功时返回 `response.data.message_id`**，可供后续 `_patch_card` 使用。
+
+**`_patch_card(message_id, title, content_md, template) → bool`**（v2.1.0 新增）
+- 调用飞书 `client.im.v1.message.patch` 接口就地更新已发送的卡片。
+- 用于长时间命令的进度心跳：每 60 秒刷新同一张卡片，而非发送新消息，避免刷屏。
+- 返回 `True` 表示更新成功，`False` 表示失败（记录 WARNING 日志，不抛出异常）。
 
 ## 5. 异常处理
 
@@ -167,6 +175,55 @@ except (json.JSONDecodeError, AttributeError) as e:
         - 主循环每分钟触发一次探活。
         - 若 **300 秒 (5 分钟)** 内既无业务消息，主动探活也连续失败，则判定连接假死。
     - **自愈**: 触发进程自杀，由 `systemd` 重新拉起，实现 100% 状态重置。
+
+## 6. 前台命令进度心跳（v2.1.0）
+
+### 6.1 问题背景
+
+原 `run_shell_command` 前台模式使用 `communicate()` 死等，用户在命令执行期间（如 `docker build`、`pip install`）收不到任何反馈，体验与卡死无异。
+
+### 6.2 整体数据流
+
+```mermaid
+sequenceDiagram
+    participant U as 飞书用户
+    participant F as FeishuInteraction
+    participant R as AgentRunner
+    participant S as ShellCommandTool
+
+    U->>F: 发送消息
+    F->>F: _process_agent_task()
+    F->>F: _send_card("🤖 思考中...") → thinking_msg_id
+    F->>R: runner.run(progress_callback=cb)
+    R->>S: execute_with_progress(progress_callback=cb, ...)
+    loop 每 60 秒
+        S->>S: 读取最新 stdout/stderr
+        S->>R: progress_callback({elapsed, recent_output})
+        R->>F: cb({elapsed, recent_output})
+        F->>F: _patch_card(thinking_msg_id, "🔄 命令执行中...")
+        F->>U: 原地更新卡片（不发新消息）
+    end
+    S-->>R: 返回完整 stdout/stderr
+    R-->>F: final_answer
+    F->>U: _send_card("🤖 执行报告")
+```
+
+### 6.3 `ShellCommandTool` 内部实现
+
+`_prepare_and_launch()` 封装了公共的权限校验、安全检查和子进程创建逻辑，返回 `Tuple[Optional[str], Optional[Process]]`：
+
+| 返回值 | 含义 |
+| :--- | :--- |
+| `(error_str, None)` | 权限拒绝 / 安全拦截 / 后台模式成功（直接返回） |
+| `(None, process)` | 前台进程就绪，调用方继续处理 |
+
+`_run_foreground_with_heartbeat()` 流式读取 stdout/stderr（避免管道缓冲区满死锁），每秒轮询进程状态，每 60 秒触发一次 `progress_callback`。
+
+### 6.4 节流策略
+
+- 进度更新**仅刷新原卡片**（`_patch_card`），不发送新消息。
+- 心跳回调异常（网络抖动等）只记录 WARNING，不中断命令执行。
+- `is_background=True` 命令不走心跳路径，逻辑完全不变。
 
 ---
 > 下一步：[更新设计文档索引](../index.md)
