@@ -9,3 +9,4 @@ pytest
 pytest-asyncio
 sqlite-vec
 tavily-python
+tiktoken
