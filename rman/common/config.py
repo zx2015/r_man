@@ -24,7 +24,7 @@ class LLMConfig(BaseModel):
     fallback_models: List[str] = Field(default_factory=list)
     summarizer_model: str = ""  # 摘要专用模型；若为空则沿用主模型
     temperature: float = 0.2
-    context_window: int = 200000
+    context_window: int = 128000
     max_tokens: int = 32768
     timeout: int = 60
 
