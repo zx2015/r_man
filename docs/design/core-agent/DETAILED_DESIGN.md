@@ -5,259 +5,7 @@
 | v1.0.0 | 2026-04-16 | 初始版本，定义 ReAct 引擎实现与 Prompt 组装 | Gemini CLI |
 | v2.0.0 | 2026-05-15 | 全面更新：重构上下文压缩系统、LLM 后端引入熔断器与指数退避 | GitHub Copilot |
 | v2.1.0 | 2026-05-22 | 新增死锁检测三级升级机制、优雅超限退出、progress_callback 参数；修复裸 except、backend traceback 丢失；模块级 import 清理 | GitHub Copilot |
-
-## 1. 模块职责
-
-核心 Agent 模块负责管理 LLM 对话上下文、解析推理逻辑、调度工具执行，并确保系统在 Token 超限前进行自我维护。
-
-## 2. 核心类设计 (Class Diagram)
-
-```mermaid
-classDiagram
-    class AgentRunner {
-        -session_id: str
-        -messages: List[Message]
-        -_rolling_summary: str
-        -max_iterations: int
-        -consecutive_empty: int
-        -last_tool_name: Optional[str]
-        +run(user_input, on_intermediate_status, progress_callback) -> FinalAnswer
-        -_check_and_compress_context()
-        -_build_progress_summary() -> str
-        -_persist_message(role, content, ...)
-    }
-
-    class PromptBuilder {
-        +build_system_prompt() -> str
-        -read_rman_md() -> str
-        -read_tools_md() -> str
-        -sync_tools_md_from_registry()
-    }
-
-    class ToolRegistry {
-        -tools: Map[str, Tool]
-        +register(tool: Tool)
-        +get_tool(name: str) -> Tool
-        +to_markdown() -> str
-    }
-
-    class LLMBackend {
-        -client: AsyncOpenAI
-        -main_model: str
-        -fallback_models: List[str]
-        -_circuits: Dict[str, _ModelCircuit]
-        +chat(messages, model_override, max_tokens_override) -> Tuple[Message, Usage]
-        -_get_circuit(model: str) -> _ModelCircuit
-        -_calc_backoff(attempt, retry_after) -> float
-        +get_circuit_status() -> Dict
-    }
-
-    class ContextSummarizer {
-        +summarize_react_trace(trace, existing_summary, max_tokens) -> str
-        -_preprocess_trace(trace) -> str
-        -_redact(text) -> str
-        -_deterministic_fallback(trace, max_tokens) -> str
-        -_get_summarizer_model() -> Optional[str]
-    }
-
-    AgentRunner --> PromptBuilder
-    AgentRunner --> ToolRegistry
-    AgentRunner --> LLMBackend
-    AgentRunner --> ContextSummarizer
-```
-
-## 3. ReAct 状态机实现
-
-Agent 的 `run` 方法是一个同步/异步阻塞过程，核心逻辑如下：
-
-1.  **初始化**: 创建 `session_id`，从 `PromptBuilder` 获取 System Prompt，将其作为第一条消息。`_rolling_summary` 和 `consecutive_empty` 初始化为零。
-2.  **迭代循环**:
-    - **Step 1: 带熔断器的 LLM 调用**:
-        1. 调用 `LLMBackend.chat`。
-        2. 后端首先检查主模型的熔断器状态：
-           - `CLOSED`：正常发起请求，失败后进行指数退避重试（最多 3 次）。
-           - `OPEN`：主模型已熔断（近期多次失败），跳过，直接尝试 fallback 模型。
-           - `HALF_OPEN`：熔断恢复期，发出一次探针请求，成功则闭合，失败则重开。
-        3. 若所有模型均不可用，裸 `raise` 保留完整调用栈（v2.1.0 修复）。
-        4. 成功后返回消息及消耗统计，并标识实际使用的模型。
-    - **Step 2**: 解析 LLM 输出（`<think>` / `<final>` / tool_calls）。tool_calls JSON 解析失败时记录 WARNING（v2.1.0 修复，不再裸 pass）。
-    - **Step 3**: 若解析出 Action，检测工具是否支持 `execute_with_progress()`。若支持且 `progress_callback` 非空，则优先调用带进度回调的版本。
-    - **Step 4**: 将工具返回的 `Observation` 封装为消息，存入上下文。
-    - **Step 5（死锁检测）**: 若既无 Action 也无 `<final>`，递增 `consecutive_empty` 并执行三级升级策略（见 §3.1）。
-    - **Step 6（超限优雅退出）**: 达到 `max_iterations` 时调用 `_build_progress_summary()` 生成进展摘要，而非裸返回错误字符串。
-3.  **终止**: 解析出 `<final>` 时返回结果；死锁提前退出或超限退出时返回摘要报告。
-
-### 3.1 死锁检测三级升级机制（v2.1.0）
-
-当 LLM 连续返回空内容或无标签内容时（常见于上下文过长导致模型截断），`consecutive_empty` 计数器递增并触发对应策略：
-
-| `consecutive_empty` | 策略 | 注入内容示例 |
-| :--- | :--- | :--- |
-| **1** | 温和引导（带上下文） | `"你已获取了 {last_tool_name} 的执行结果，请基于此继续推理..."` |
-| **2** | 强制指令 | `"⚠️ 系统警告：连续 2 轮未输出有效内容。请立即使用 <final> 或调用工具..."` |
-| **≥3** | 提前退出 + 进展摘要 | 调用 `_build_progress_summary()`，返回结构化进展报告 |
-
-任何成功执行 Action 的轮次会将 `consecutive_empty` 归零。
-
-### 3.2 进展摘要生成（`_build_progress_summary`）
-
-死锁提前退出和 `max_iterations` 超限均调用此方法：
-
-1. 取最近 20 条消息（跳过 System Prompt）作为摘要输入。
-2. 调用 `memory_summarizer.summarize_react_trace(trace, existing_summary=_rolling_summary, max_tokens=500)`。
-3. 若摘要器调用失败，降级为提取最后一条 `assistant/tool` 消息前 300 字符。
-
-### 3.3 `progress_callback` 接口
-
-`run()` 方法的可选参数，类型为 `Optional[Callable[[dict], Coroutine]]`，约定的 dict 字段：
-
-| 字段 | 类型 | 说明 |
-| :--- | :--- | :--- |
-| `command` | str | 正在运行的命令 |
-| `elapsed_minutes` | int | 已运行分钟数 |
-| `recent_output` | List[str] | 最近输出行（最多 10 行） |
-
-工具层通过 `hasattr(tool, 'execute_with_progress')` 检测支持状态，当前仅 `ShellCommandTool` 实现此接口。
-
-## 4. 动态 Prompt 组装逻辑
-
-`PromptBuilder` 负责维护模板与工作区的一致性，遵循"工作区优先，模板兜底"原则：
-
-- **初始化流程 (Startup Check)**:
-    1.  检查 `workspace/` 目录。
-    2.  若 `workspace/RMAN.md` 缺失，则检测 `templates/RMAN.md`。若有则拷贝，若无则按内置常量创建。
-    3.  若 `workspace/TOOLS.md` 缺失，则检测 `templates/TOOLS.md`。若有则拷贝，若无则调用 `ToolRegistry` 生成。
-- **加载逻辑**:
-    - 每次会话启动时，强制从 `workspace/` 重新读取文件内容。
-    - 文件长度限制 32KB。
-- **输出组装**:
-    - 将 `RMAN.md`、工具说明（来自 `TOOLS.md`）与格式规范拼接为最终的 System Prompt。
-
-## 5. 上下文压缩系统 (Context Compression)
-
-v2.0.0 对压缩系统进行了完整架构升级，从单次 LLM 调用变为**增量滚动摘要（Incremental Rolling Summary）**模式。
-
-### 5.1 触发条件（80/60 准则）
-
-在每一轮推理前，`AgentRunner._check_and_compress_context()` 使用 `tiktoken` 计算当前消息序列 Token 数。当 Token 数 > `context_window * 0.8` 时触发压缩，目标将 Token 降至约 60%。
-
-### 5.2 消息序列分段
-
-压缩触发时，消息序列被划分为三部分：
-
-| 分段 | 内容 | 处理 |
-| :--- | :--- | :--- |
-| **Fixed (Index 0)** | System Prompt | 永远保留 |
-| **Compressible** | Index 1 到 -5 的历史消息 | 提取为文本，调用压缩器 |
-| **Preserved** | 最后 5 轮消息 | 原样保留，保证当前推理语义连贯 |
-
-### 5.3 增量滚动摘要流程
-
-```mermaid
-sequenceDiagram
-    participant R as AgentRunner
-    participant S as ContextSummarizer
-    participant L as LLMBackend
-
-    R->>R: 检测 Token > 80% 阈值
-    R->>S: summarize_react_trace(trace, existing_summary, max_tokens)
-    S->>S: _redact() 敏感信息脱敏
-    S->>S: _preprocess_trace() JSON → 可读文本
-    S->>L: chat(model=summarizer_model, max_tokens=budget)
-    L-->>S: 新摘要文本
-    S-->>R: merged_summary
-    R->>R: _rolling_summary = merged_summary
-    R->>R: messages = [System, Summary, ...Preserved]
-```
-
-**关键设计**：
-- `existing_summary` 参数传入当前的 `_rolling_summary`，每次压缩都是**在上一次摘要基础上追加**，而非重新摘要全部历史，避免已压缩信息的二次信息损耗。
-- `_rolling_summary` 在 `AgentRunner` 实例上持久化，跨多轮压缩积累。
-
-### 5.4 压缩 Pipeline 细节
-
-1. **预处理（`_preprocess_trace`）**: 将 JSON Action/Observation 转换为人类可读的文本结构，减少 LLM 处理时的结构噪声。
-2. **脱敏（`_redact`）**: 使用正则规则组 `_REDACT_RULES` 抹除 API Key、密码、IP、Token 等敏感信息，替换为 `[REDACTED]`。
-3. **Token 预算（`max_tokens`）**: 正确使用 `max_tokens / 1.5` 换算为汉字上限（1 汉字 ≈ 1.5 Token），传入 LLM 的 `max_tokens` 参数有效约束输出长度。
-4. **确定性兜底（`_deterministic_fallback`）**: LLM 调用失败时，使用正则从 trace 中提取关键行（含 `Final Answer`、`Action:`、`Error` 等），生成结构化文本摘要，确保压缩不会因 LLM 故障而整体失败。
-
-### 5.5 摘要专用模型配置
-
-```yaml
-llm:
-  summarizer_model: "gpt-4o-mini"  # 留空则沿用主模型
-```
-
-`_get_summarizer_model()` 读取此配置，允许使用更便宜、更快速的模型执行压缩任务，节约主模型配额。
-
-## 6. LLM 后端稳定性设计
-
-### 6.1 熔断器（Circuit Breaker）
-
-`LLMBackend` 为每个模型维护一个 `_ModelCircuit` 实例，实现三状态熔断：
-
-```mermaid
-stateDiagram-v2
-    [*] --> CLOSED
-    CLOSED --> OPEN: 连续失败 >= 3 次\n(429/5xx/timeout)
-    OPEN --> HALF_OPEN: 冷却期满 60s
-    HALF_OPEN --> CLOSED: 探针请求成功
-    HALF_OPEN --> OPEN: 探针请求失败
-```
-
-**关键约束**：
-- `401 Unauthorized`、`400 Bad Request` 等**应用层错误**不计入熔断计数，避免配置错误时误熔断所有备用模型。
-- 仅 `429`、`5xx`、`timeout` 计入失败次数（基础设施故障）。
-
-### 6.2 指数退避（Exponential Backoff）
-
-每次请求失败后，等待时间按 `base * 2^attempt + jitter` 计算（上限 30 秒），优先从响应头 `Retry-After` 读取等待时间（用于 429 场景）。
-
-```
-attempt 1: base(1s) * 2^0 = 1s ± jitter
-attempt 2: base(1s) * 2^1 = 2s ± jitter
-attempt 3: base(1s) * 2^2 = 4s ± jitter (主模型放弃，切 fallback)
-```
-
-### 6.3 配置参数
-
-| 常量 | 默认值 | 说明 |
-| :--- | :--- | :--- |
-| `_CB_FAILURE_THRESHOLD` | 3 | 触发熔断的连续失败次数 |
-| `_CB_RECOVERY_SECONDS` | 60 | OPEN → HALF_OPEN 冷却时间（秒） |
-| `_BACKOFF_BASE` | 1.0 | 退避基数（秒） |
-| `_BACKOFF_MAX` | 30.0 | 单次退避最大等待（秒） |
-
-### 6.4 异常栈保留（v2.1.0）
-
-v2.1.0 修复了 `raise last_exception` 导致原始调用栈丢失的问题。由于最终 `raise` 仍在 `except Exception as e:` 块内部，改为裸 `raise` 即可原地重抛，调试时可精确定位故障行。
-
-```python
-# 修复前：新建 traceback frame，隐藏原始位置
-raise last_exception
-
-# 修复后：原地重抛，完整保留调用栈
-raise
-```
-
-## 7. 工具注册与执行契约
-
-所有工具必须继承 `BaseTool` 基类，并定义 Pydantic 参数模型。
-
-```python
-class BaseTool(ABC):
-    name: str
-    description: str
-    parameters_schema: Type[BaseModel]
-
-    @abstractmethod
-    async def execute(self, **kwargs) -> str:
-        """必须捕捉所有异常，返回字符串"""
-        ...
-```
-
----
-> 下一步：[内存系统详细设计](../memory-system/DETAILED_DESIGN.md)
+| v2.2.0 | 2026-06-09 | 新增 §7 N+1 收尾轮设计：`_run_closing_summary()`、退出路径统一重构、closing prompt 模板 | GitHub Copilot |
 
 
 ## 1. 模块职责
@@ -368,7 +116,7 @@ Agent 的 `run` 方法是一个同步/异步阻塞过程，核心逻辑如下：
 > 重点保留：已完成的任务目标、关键参数配置、重要的 Observation 数据。
 > 形式：使用时间轴或步骤列表，字数压缩率需达到 90% 以上。”
 
-## 5. 上下文窗口管理 (Context Window Management)
+## 6. 上下文窗口管理 (Context Window Management)
 
 Agent 采用五层结构来维护 Context Window，平衡“长短期记忆”与“细节精度”：
 
@@ -395,7 +143,7 @@ Agent 采用五层结构来维护 Context Window，平衡“长短期记忆”�
 - **存储内容**: 持久化存储实时记录完整的消息流。
 - **恢复逻辑**: 重启会话时，系统按序回填最近的消息。如果历史中存在 `[Compacted Summary]`，它将作为历史背景自然存在于上下文的早期部分，后续则是原始的工具执行细节。不再生成额外的全任务汇总摘要。
 
-## 6. 工具注册与执行契约
+## 7. 工具注册与执行契约
 
 所有工具必须继承 `BaseTool` 基类，并定义 Pydantic 参数模型。
 
@@ -413,3 +161,134 @@ class BaseTool(ABC):
 
 ---
 > 下一步：[内存系统详细设计](../memory-system/DETAILED_DESIGN.md)
+
+---
+
+## 8. N+1 收尾轮设计（v2.2.0）
+
+> 需求来源：[REQ-CORE-004](../../requirements/core-agent/REQ-CORE-004.md)
+
+### 7.1 设计目标
+
+在 N 轮正常 ReAct 循环结束后，额外执行 **1 轮收尾对话**，由主模型主动生成"当前进展总结 + 下一步行动建议"，取代原先被动的 summarizer 摘要，提升用户体验。
+
+### 7.2 退出路径统一重构
+
+原有两条独立退出路径（内联 `return`）统一重构为 `break` + 收敛到 `_run_closing_summary()`：
+
+```mermaid
+flowchart TD
+    A[for i in range max_iterations] --> B{本轮结果}
+    B -->|有 tool_calls| C[执行工具 → continue]
+    B -->|有 final| D["return final ✅ 正常完成"]
+    B -->|空输出| E[consecutive_empty++]
+    E --> F{consecutive_empty}
+    F -->|== 1| G[注入温和引导 prompt]
+    F -->|== 2| H[注入强制指令 prompt]
+    F -->|">= 3"| I["exit_reason=deadlock; break"]
+    C --> A
+    G --> A
+    H --> A
+    A -->|range 耗尽| J["exit_reason=max_iterations"]
+    I --> K[_run_closing_summary]
+    J --> K
+    K -->|LLM 成功| L[返回收尾总结给用户]
+    K -->|LLM 失败| M[降级 _build_progress_summary]
+```
+
+**关键变化**：死锁路径从 `return` 改为 `break`，与超限路径一起收敛到循环外统一处理，消除重复逻辑。
+
+### 7.3 `_run_closing_summary()` 方法设计
+
+**签名**：
+```python
+async def _run_closing_summary(
+    self,
+    reason: str,          # "max_iterations" | "deadlock"
+    iteration_count: int, # 已执行的轮次数（用于 prompt 中说明）
+    total_usage: dict,    # 就地累加 token 用量
+) -> str:
+```
+
+**执行逻辑**：
+
+```
+1. 根据 reason 选择对应 closing_prompt 模板，填入 iteration_count
+2. 构造临时 messages：self.messages + [{"role": "user", "content": closing_prompt}]
+3. 调用 llm_backend.chat(tmp_messages, tools=None)
+4. 若返回 usage，累加至 total_usage
+5. 取 reply.content（忽略任何 tool_calls）
+6. 加前缀标识后返回
+7. 异常时降级到 _build_progress_summary()，并记录 WARNING
+```
+
+**注意**：`tmp_messages` 是临时构造的局部变量，**不修改** `self.messages`，收尾 prompt 不写入 session history。
+
+### 7.4 Closing Prompt 模板
+
+#### 超限触发（reason = "max_iterations"）
+
+```
+你已执行了 {iteration_count} 轮推理步骤（系统最大步数限制），任务尚未完全完成。
+
+请根据以上完整的对话记录，用自然语言完成以下两件事：
+
+1. **当前进展总结**：到目前为止，你已经完成了什么？任务还差哪些步骤没有完成？
+2. **下一步建议**：如果用户希望继续这个任务，他/她应该做什么？请给出具体、可操作的建议。
+
+请用清晰的 Markdown 格式回复，不要调用任何工具。
+```
+
+#### 死锁触发（reason = "deadlock"）
+
+```
+你在最近连续多轮推理中未能产生有效输出（既没有调用工具，也没有给出结论），系统已提前终止任务。
+
+请根据以上完整的对话记录，用自然语言完成以下两件事：
+
+1. **当前进展总结**：到目前为止，你已经完成了什么？任务还差哪些步骤没有完成？
+2. **下一步建议**：如果用户希望继续这个任务，他/她应该做什么？请给出具体、可操作的建议。
+
+请用清晰的 Markdown 格式回复，不要调用任何工具。
+```
+
+### 7.5 `AgentRunner` 类图更新（对比 v2.1.0）
+
+```mermaid
+classDiagram
+    class AgentRunner {
+        -session_id: str
+        -messages: List[Message]
+        -_rolling_summary: str
+        -max_iterations: int
+        -_MAX_OBS_LENGTH: int
+        +run(user_input, on_intermediate_status, progress_callback) Tuple[str, dict]
+        -_run_closing_summary(reason, iteration_count, total_usage) str
+        -_check_and_compress_context()
+        -_build_progress_summary() str
+        -_persist_message(role, content, ...)
+    }
+```
+
+`_run_closing_summary()` 替代了原先分散在两处的内联退出逻辑；`_build_progress_summary()` 降级为其 fallback，不再直接被 `run()` 调用。
+
+### 7.6 Token 用量追踪
+
+`total_usage` 是一个可变 dict，在 `_run_closing_summary` 内就地累加：
+
+```python
+if usage:
+    total_usage["input"] += usage.prompt_tokens
+    total_usage["output"] += usage.completion_tokens
+```
+
+收尾轮的 token 消耗对调用方透明，`run()` 返回的 `total_usage` 始终包含完整统计。
+
+### 7.7 降级行为
+
+| 场景 | 行为 | 日志级别 |
+| :--- | :--- | :--- |
+| LLM 正常返回 | 直接使用 `reply.content` | INFO |
+| Context 超限（API 报错） | 降级到 `_build_progress_summary()` | WARNING |
+| 网络超时 / 熔断器开路 | 降级到 `_build_progress_summary()` | WARNING |
+| `_build_progress_summary` 也失败 | 返回固定兜底文字 | ERROR |
