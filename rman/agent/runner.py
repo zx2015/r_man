@@ -22,6 +22,22 @@ class AgentRunner:
 
     _MAX_OBS_LENGTH = 100_000  # Observation 硬截断上限，防止单次请求超过 LLM API 物理极限
 
+    # Closing prompt 模板：N+1 收尾轮使用，不进入 self.messages
+    _CLOSING_PROMPT_MAX_ITER = (
+        "你已执行了 {iteration_count} 轮推理步骤（系统最大步数限制），任务尚未完全完成。\n\n"
+        "请根据以上完整的对话记录，用自然语言完成以下两件事：\n\n"
+        "1. **当前进展总结**：到目前为止，你已经完成了什么？任务还差哪些步骤没有完成？\n"
+        "2. **下一步建议**：如果用户希望继续这个任务，他/她应该做什么？请给出具体、可操作的建议。\n\n"
+        "请用清晰的 Markdown 格式回复，不要调用任何工具。"
+    )
+    _CLOSING_PROMPT_DEADLOCK = (
+        "你在最近连续多轮推理中未能产生有效输出（既没有调用工具，也没有给出结论），系统已提前终止任务。\n\n"
+        "请根据以上完整的对话记录，用自然语言完成以下两件事：\n\n"
+        "1. **当前进展总结**：到目前为止，你已经完成了什么？任务还差哪些步骤没有完成？\n"
+        "2. **下一步建议**：如果用户希望继续这个任务，他/她应该做什么？请给出具体、可操作的建议。\n\n"
+        "请用清晰的 Markdown 格式回复，不要调用任何工具。"
+    )
+
     def __init__(self, session_id: str, chat_id: str = ""):
         self.session_id = session_id
         self.chat_id = chat_id
@@ -54,6 +70,8 @@ class AgentRunner:
         total_usage = {"input": 0, "output": 0, "model": config.llm.model}
         consecutive_empty = 0       # 连续无有效输出（无 Action、无 final）的轮次计数
         last_tool_name: Optional[str] = None  # 上一次成功执行的工具名，用于增强引导词
+        exit_reason: str = "max_iterations"   # 退出原因，死锁时覆盖为 "deadlock"
+        exit_iteration: int = self.max_iterations  # 实际执行轮次，用于收尾 prompt
 
         for i in range(self.max_iterations):
             # --- 自动窗口压缩 (80/60 准则) ---
@@ -148,13 +166,11 @@ class AgentRunner:
                 logger.warning(f"No action or final in iteration {i+1}. Consecutive empty: {consecutive_empty}")
 
                 if consecutive_empty >= 3:
-                    # 第 3 次及以上：逻辑死锁，提前退出并生成进展摘要
+                    # 第 3 次及以上：逻辑死锁，跳出循环统一走收尾轮
                     logger.error(f"Logical deadlock detected (consecutive_empty={consecutive_empty}). Triggering early exit.")
-                    progress = await self._build_progress_summary()
-                    return (
-                        f"⚠️ 任务执行遇到障碍，连续 {consecutive_empty} 轮无有效输出，已提前终止。\n\n"
-                        f"**目前进展**：\n{progress}"
-                    ), total_usage
+                    exit_reason = "deadlock"
+                    exit_iteration = i + 1
+                    break
 
                 elif consecutive_empty == 2:
                     # 第 2 次：强制指令，要求立即给出结论或行动
@@ -180,13 +196,13 @@ class AgentRunner:
                         prompt = "系统提示：请继续。如果任务已完成，请回复 <final>；如果需要工具，请调用。"
                     self.messages.append({"role": "user", "content": prompt})
 
-        # 达到最大迭代次数，生成进展摘要而非裸错误信息
-        logger.warning(f"Max iterations ({self.max_iterations}) reached for session {self.session_id}.")
-        progress = await self._build_progress_summary()
-        return (
-            f"⚠️ 任务已达最大执行步数（{self.max_iterations} 轮），未能完整完成。\n\n"
-            f"**目前进展**：\n{progress}"
-        ), total_usage
+        # 达到最大迭代次数或死锁熔断，统一走 N+1 收尾轮
+        logger.warning(
+            f"Session {self.session_id} exiting ReAct loop: reason={exit_reason}, "
+            f"iterations={exit_iteration}/{self.max_iterations}."
+        )
+        closing_text = await self._run_closing_summary(exit_reason, exit_iteration, total_usage)
+        return closing_text, total_usage
 
     def _persist_message(self, role: str, content: str, name: str = None, tool_call_id: str = None, tool_calls: Any = None):
         """内部持久化逻辑，支持结构化 tool_calls"""
@@ -198,6 +214,70 @@ class AgentRunner:
             ),
             name="persist_message"
         )
+
+    async def _run_closing_summary(
+        self,
+        reason: str,
+        iteration_count: int,
+        total_usage: dict,
+    ) -> str:
+        """N+1 收尾轮：用主模型生成进展总结与下一步建议。
+
+        closing prompt 不写入 self.messages，不污染 ReAct 轨迹。
+        LLM 调用失败时降级到 _build_progress_summary()。
+
+        Args:
+            reason: "max_iterations" | "deadlock"
+            iteration_count: 已执行的 ReAct 轮次数
+            total_usage: 就地累加本轮 token 用量
+        """
+        if reason == "deadlock":
+            closing_prompt = self._CLOSING_PROMPT_DEADLOCK
+        else:
+            closing_prompt = self._CLOSING_PROMPT_MAX_ITER.format(
+                iteration_count=iteration_count
+            )
+
+        logger.info(
+            f"Starting closing summary (reason={reason}, iterations={iteration_count})."
+        )
+
+        # 构造临时 messages，不修改 self.messages
+        tmp_messages = self.messages + [{"role": "user", "content": closing_prompt}]
+
+        try:
+            llm_message, usage = await llm_backend.chat(tmp_messages, tools=None)
+            if usage:
+                total_usage["input"] += usage.prompt_tokens
+                total_usage["output"] += usage.completion_tokens
+
+            # 忽略意外的 tool_calls，只取文本内容
+            content = (llm_message.content or "").strip()
+            if not content:
+                raise ValueError("Closing summary returned empty content.")
+
+            prefix = (
+                "⚠️ 任务因达到最大步数而终止" if reason == "max_iterations"
+                else "⚠️ 任务因连续无有效输出而提前终止"
+            )
+            return f"{prefix}，以下是当前进展与建议：\n\n{content}"
+
+        except Exception as e:
+            logger.warning(
+                f"Closing summary LLM call failed ({e}). "
+                f"Falling back to _build_progress_summary."
+            )
+            try:
+                progress = await self._build_progress_summary()
+                return (
+                    f"⚠️ 任务退出（{reason}），收尾总结生成失败，以下为自动摘要：\n\n{progress}"
+                )
+            except Exception as fallback_err:
+                logger.error(f"Fallback summary also failed: {fallback_err}")
+                return (
+                    f"⚠️ 任务退出（{reason}），已执行 {iteration_count} 轮，"
+                    f"总结生成失败，请查看服务器日志了解详情。"
+                )
 
     async def _build_progress_summary(self) -> str:
         """基于当前 messages 生成进展摘要，用于逻辑死锁或超限时的优雅降级"""
