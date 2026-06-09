@@ -168,11 +168,11 @@ class BaseTool(ABC):
 
 > 需求来源：[REQ-CORE-004](../../requirements/core-agent/REQ-CORE-004.md)
 
-### 7.1 设计目标
+### 8.1 设计目标
 
 在 N 轮正常 ReAct 循环结束后，额外执行 **1 轮收尾对话**，由主模型主动生成"当前进展总结 + 下一步行动建议"，取代原先被动的 summarizer 摘要，提升用户体验。
 
-### 7.2 退出路径统一重构
+### 8.2 退出路径统一重构
 
 原有两条独立退出路径（内联 `return`）统一重构为 `break` + 收敛到 `_run_closing_summary()`：
 
@@ -198,7 +198,7 @@ flowchart TD
 
 **关键变化**：死锁路径从 `return` 改为 `break`，与超限路径一起收敛到循环外统一处理，消除重复逻辑。
 
-### 7.3 `_run_closing_summary()` 方法设计
+### 8.3 `_run_closing_summary()` 方法设计
 
 **签名**：
 ```python
@@ -224,7 +224,7 @@ async def _run_closing_summary(
 
 **注意**：`tmp_messages` 是临时构造的局部变量，**不修改** `self.messages`，收尾 prompt 不写入 session history。
 
-### 7.4 Closing Prompt 模板
+### 8.4 Closing Prompt 模板
 
 #### 超限触发（reason = "max_iterations"）
 
@@ -252,7 +252,7 @@ async def _run_closing_summary(
 请用清晰的 Markdown 格式回复，不要调用任何工具。
 ```
 
-### 7.5 `AgentRunner` 类图更新（对比 v2.1.0）
+### 8.5 `AgentRunner` 类图更新（对比 v2.1.0）
 
 ```mermaid
 classDiagram
@@ -272,7 +272,7 @@ classDiagram
 
 `_run_closing_summary()` 替代了原先分散在两处的内联退出逻辑；`_build_progress_summary()` 降级为其 fallback，不再直接被 `run()` 调用。
 
-### 7.6 Token 用量追踪
+### 8.6 Token 用量追踪
 
 `total_usage` 是一个可变 dict，在 `_run_closing_summary` 内就地累加：
 
@@ -284,7 +284,7 @@ if usage:
 
 收尾轮的 token 消耗对调用方透明，`run()` 返回的 `total_usage` 始终包含完整统计。
 
-### 7.7 降级行为
+### 8.7 降级行为
 
 | 场景 | 行为 | 日志级别 |
 | :--- | :--- | :--- |
